@@ -4,6 +4,11 @@ MaiBot 插件：好友申请审批（LLM 自动 / 管理员人工 / 混合）+ �
 
 > 配置示例见 [`config.example.toml`](config.example.toml)：复制为 `config.toml` 后按需修改（首次加载也会自动生成默认配置）。更新历史见 [CHANGELOG.md](CHANGELOG.md)。
 
+## 环境要求
+
+- MaiBot ≥ 1.3.0（插件 SDK 2.6.0 ~ 2.91.99，见 `_manifest.json`）
+- 对端为标准 OneBot v11 正向 WebSocket 服务端（NapCat / SnowLuma 均可），且允许多个客户端同时连接
+
 ## 安装
 
 1. 把本目录放入 MaiBot 的 `plugins/` 目录（OneKey 桌面版为 `<模块根>\plugins\Mai_gatekeeper\`），或通过 WebUI 插件市场安装 zip；
@@ -17,7 +22,7 @@ MaiBot 插件：好友申请审批（LLM 自动 / 管理员人工 / 混合）+ �
 | 好友申请审批 | 自动（WS 事件） | `approve.mode`：`auto`（LLM 全自动）/ `manual`（推送管理员）/ `hybrid`（LLM 先审，低置信转人工，默认）；命中屏蔽名单的申请人一律直接拒绝 |
 | 屏蔽用户 | planner 工具 `block_user`（**仅群聊**） | 屏蔽作用域为本群，**受时长上限约束**（`max_duration_hours`，默认一天，到期自动解除；planner 可指定更短时长）；屏蔽成功后会在群里发一条提示告知对方；被屏蔽者消息在 `chat.receive.before_process` 阶段被完全丢弃（不入库、不回复、不计频率） |
 | 解除屏蔽 | planner 工具 `unblock_user`（**仅群聊**）/ `/block un` | |
-| 删除好友 | planner 工具 `remove_friend`（**仅私聊**） | 私聊中 planner 唯一可用的守门人工具；**目标固定为当前对话对象，工具不接受指定其他用户**（防诱导删除任意好友）；删除后自动全局屏蔽并通知管理员 |
+| 删除好友 | planner 工具 `remove_friend`（**仅私聊**，**默认关闭**） | 私聊中 planner 唯一可用的守门人工具；**目标固定为当前对话对象，工具不接受指定其他用户**（防诱导删除任意好友）；删除后自动全局屏蔽并通知管理员。需在配置中显式开启（`allow_remove_friend`） |
 | 管理命令 | `/fr list\|ok\|no`、`/block list\|un\|add` | 管理员 = `[admin].admin_ids` ∪ 主程序级操作员（bot_config `[plugin].permission`，格式 `platform:id`）∪ WebUI 本地控制台；admin_ids 为空时仅后两者可用 |
 
 ## 配置（config.toml）
@@ -72,7 +77,7 @@ notify_admin_on_remove = true  # 删好友后转告管理员（不可逆操作�
 ## 测试
 
 ```
-tests/run_self_test.py       # 插件逻辑 mock 自测（94 项，含 on_load 全流程与审批/屏蔽/命令全链路）
+tests/run_self_test.py       # 插件逻辑 mock 自测（105 项，含 on_load 全流程、审批/屏蔽/命令全链路与出厂默认配置安全姿态）
 tests/run_ob_client_test.py  # OneBotClient 对本地模拟对端的集成测试（12 项：鉴权/echo/事件/重连）
 ```
 
