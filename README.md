@@ -103,7 +103,7 @@ python -X utf8 scripts/package.py  # 白名单确定性源码包；隔离子进�
 - QQ 好友申请 flag 有时效，但一般 action 失败/超时不代表过期；本版保守记录 failed/unknown，禁止未确认重放；动作结果先落库，通知失败不重做动作。
 - 对端需允许多个 WS 客户端同时连接（NapCat 支持；snowluma-adapter 本身保持连接不冲突）；
 - 被屏蔽者发送的命令同样会被拦截（拦截点在命令链之前）。
-- GIF 的 `animation_frame_sheet` 和本插件 `gatekeeper_intercept` 均为第三方 BLOCKING/EARLY；Host 同槽按 `(mode, order, source_rank, plugin_id, name)` 排序，`github.fabiocsa.read-gif` 先于 `octmicy.mai-gatekeeper`。因此本插件**不能保证省去被屏蔽者已先发生的 GIF/VLM 成本**，不修改 Host/GIF 或改插件 ID 抢顺序。最小协调建议是另行评审把 GIF 识别放在准入之后（例如较晚 Hook order），或明确宿主准入阶段契约。
+- 原GIF<=0.2.0与本插件同为BLOCKING/EARLY，同槽排序令GIF先运行；维护实例后续已独立热更GIF0.2.1到NORMAL，门卫EARLY可先abort，真实Host Dispatcher/Runner合成验证屏蔽消息不进GIF。此协调不修改插件ID/宿主、不保证拦截所有更早第三方副作用，也不合并原生表情标签与GIF描述的模型费用。
 - 屏蔽只过滤未来入站消息，不删除共享 Focus 旧历史，也不取消其他插件已启动的任务。工具使用共享 Focus 已路由成员的真实 session/account，不伪造 session；当前可信信封没有账号身份时保守拒绝工具。
 - 独立 OneBot 网络动作不是 Host capability 沙箱，manifest 权限不能约束所有传输副作用。LLM 自报 confidence 不是身份验证，验证消息/昵称是不可信输入，仍可能提示注入；本版不改变用户选择的 hybrid/0.7 策略。
 - 最多 16 个并发事件任务、32 个待响应动作；过载丢弃新自动审核工作并告警，需管理员检查对端，不能宣称永不丢事件。验证消息截断 2000 字符、昵称 100、补充规则 4000、LLM 输出 8192，审核超时 60s。日志只记序号/状态/异常类型，不记录 flag、token、验证消息、模型回复或异常原文；管理员通知仍包含处理所需信息。
