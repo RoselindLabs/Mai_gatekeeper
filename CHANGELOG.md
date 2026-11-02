@@ -1,5 +1,14 @@
 # 更新日志
 
+## 0.6.8（2026-11-02，znzsofficial 定向维护 fork）
+
+- 修复 SDK2.20 消息/会话解包，消息查询传 chat_id 并验证 session/account/platform/group；敏感工具 opt-in 既有可信身份桥，缺身份拒绝。
+- 外部审批前持久 CAS claim；不可逆删好友持久 ledger 防重复。超时/断连/取消记录 unknown，严格检查 status+retcode，failed 不再等同 expired；通知失败不重放动作。
+- 配置 generation/最新策略与生命周期锁，清空连接配置关闭旧 client；核验 OneBot 登录与事件 self_id，管理员私聊匹配账号后路由。
+- planner 保护 Host 操作员、机器人自己、插件管理员与保护名单，保护配置读取失败关闭执行；事件/动作/LLM 输入有界并脱敏日志。
+- 原配置 schema/默认选择、插件 ID、安装目录、MIT 与历史保留；旧库增量迁移前备份，旧未归属 pending 保留但不自动执行，未知账本不重放；禁止旧代码直接读取迁移库。
+- 继承 105 项断言并补定向离线回归、隔离源码包与 SDK2.20 双平台 CI。文档明确 GIF 同槽先运行、共享 Focus 历史及非沙箱边界；不含自动部署/Release。
+
 ## 0.6.7（2026-11-01）
 
 - README 补充环境要求小节（MaiBot ≥ 1.3.0、SDK 2.6.0 ~ 2.91.99）；功能表标注 `remove_friend` 默认关闭；自测项数更正

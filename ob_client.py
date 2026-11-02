@@ -101,6 +101,8 @@ class OneBotClient:
         self._ws: Any = None
         self._stop_requested = False
         self._state = _ClientState()
+        self.self_id = ""
+        self._event_overflow_logged = False
 
     # ------------------------------------------------------------------
     # 对外接口
@@ -132,6 +134,7 @@ class OneBotClient:
     async def stop(self) -> None:
         """停止连接并清理所有后台任务。"""
         self._stop_requested = True
+        self.self_id = ""
         connection_task = self._connection_task
         self._connection_task = None
 
@@ -168,6 +171,8 @@ class OneBotClient:
         config = self._config
         if ws is None or ws.closed or config is None:
             raise RuntimeError("OneBot 对端未连接")
+        if len(self._pending_actions) >= 32:
+            raise RuntimeError("OneBot action capacity reached")
 
         echo_id = uuid4().hex
         loop = asyncio.get_running_loop()
@@ -213,11 +218,13 @@ class OneBotClient:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._logger.warning(f"守门人连接 OneBot 对端失败: {exc}；将在 {config.reconnect_delay_sec:g} 秒后重连")
+                self._logger.warning(f"守门人连接 OneBot 对端失败 ({type(exc).__name__})；将在 {config.reconnect_delay_sec:g} 秒后重连")
             finally:
                 self._ws = None
                 self._state.connected = False
+                self.self_id = ""
                 self._fail_pending_actions("连接已中断")
+                await self._cancel_background_tasks()
 
             if self._stop_requested:
                 break
@@ -226,6 +233,14 @@ class OneBotClient:
     async def _probe_peer(self) -> None:
         """连接后探测对端实现类型（napcat / snowluma），仅用于日志。"""
         try:
+            login = await self.call_action("get_login_info", {})
+            if (not isinstance(login, dict) or login.get("status") != "ok"
+                    or type(login.get("retcode")) is not int or login["retcode"] != 0
+                    or not isinstance(login.get("data"), dict)):
+                return
+            self.self_id = str(login["data"].get("user_id") or "").strip()
+            if not self.self_id:
+                return
             response = await self.call_action("get_version_info", {})
             data = response.get("data") if isinstance(response, dict) else None
             if not isinstance(data, dict):
@@ -235,9 +250,9 @@ class OneBotClient:
             normalized = app_name.lower()
             client_type = "snowluma" if "snowluma" in normalized else ("napcat" if "napcat" in normalized else "unknown")
             self._state.peer_info = PeerInfo(app_name=app_name, app_version=app_version, client_type=client_type)
-            self._logger.info(f"守门人对端实现: {app_name or '未知'} {app_version}")
+            self._logger.info(f"守门人对端类型: {client_type}")
         except Exception as exc:
-            self._logger.debug(f"守门人探测对端类型失败（不影响使用）: {exc}")
+            self._logger.debug(f"守门人探测对端类型失败 ({type(exc).__name__})")
 
     async def _receive_loop(self, ws: Any) -> str:
         """持续消费 WebSocket 消息：echo 响应回填 future，事件交给回调。"""
@@ -258,6 +273,14 @@ class OneBotClient:
                     self._resolve_pending_action(echo_id, payload)
                     continue
 
+                if payload.get("post_type") != "request" or payload.get("request_type") != "friend":
+                    continue
+                if len(self._background_tasks) >= 16:
+                    if not self._event_overflow_logged:
+                        self._logger.warning("守门人事件容量已满；未自动审批，需人工检查对端申请")
+                        self._event_overflow_logged = True
+                    continue
+                self._event_overflow_logged = False
                 self._create_background_task(self._on_event(payload), "gatekeeper.event")
         finally:
             pass
@@ -277,7 +300,7 @@ class OneBotClient:
             return
         exception = task.exception()
         if exception is not None:
-            self._logger.error(f"守门人后台任务异常: {exception}", exc_info=exception)
+            self._logger.error(f"守门人后台任务异常 ({type(exception).__name__})")
 
     async def _cancel_background_tasks(self) -> None:
         """取消所有仍在运行的后台任务。"""
@@ -306,8 +329,10 @@ class OneBotClient:
     def _parse_json_message(self, data: Any) -> dict[str, Any] | None:
         """解析 WebSocket 文本消息中的 JSON 数据。"""
         try:
+            if len(str(data)) > 65536:
+                return None
             payload = json.loads(str(data))
         except Exception as exc:
-            self._logger.warning(f"守门人解析 JSON 载荷失败: {exc}")
+            self._logger.warning(f"守门人解析 JSON 载荷失败 ({type(exc).__name__})")
             return None
         return payload if isinstance(payload, dict) else None

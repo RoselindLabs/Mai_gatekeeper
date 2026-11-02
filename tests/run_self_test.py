@@ -23,6 +23,7 @@ import tempfile
 import traceback
 from pathlib import Path
 from typing import Any
+from maibot_sdk.context import PluginContext
 
 SDK_PATH = os.environ.get("MAIBOT_SDK_PATH", r"D:\MaiBot\plugin\maibot-plugin-sdk-2.13.0")
 PLUGIN_ROOT = r"D:\workdoc\plugin"
@@ -98,13 +99,15 @@ class FakeChat:
     async def get_stream_by_user_id(self, user_id: str, platform: str = "qq") -> dict[str, Any]:
         sid = self.sessions.get(user_id)
         if sid:
-            return {"success": True, "stream": {"stream_id": sid}}
+            return {"success": True, "stream": {"stream_id": sid, "account_id": "90000",
+                    "platform": platform, "user_id": user_id, "chat_type": "private"}}
         return {"success": True, "stream": None}
 
     async def open_session(self, platform: str = "qq", chat_type: str = "private", *, user_id: str = "", **kw: Any) -> dict[str, Any]:
         sid = f"stream-{user_id}"
         self.sessions[user_id] = sid
-        return {"success": True, "created": True, "stream": {"stream_id": sid}, "stream_id": sid}
+        return {"success": True, "created": True, "stream": {"stream_id": sid, "account_id": kw.get("account_id"),
+                "platform": platform, "user_id": user_id, "chat_type": "private"}, "stream_id": sid}
 
 
 class FakeMessage:
@@ -123,14 +126,25 @@ class FakePaths:
         self.data_dir = data_dir
 
 
-class FakeCtx:
+class FakeCtx(PluginContext):
     def __init__(self, data_dir: Path, plugin_configs: dict[str, dict[str, Any]] | None = None) -> None:
-        self.logger = FakeLogger()
-        self.send = FakeSend()
-        self.config = FakeConfigCap(plugin_configs)
-        self.llm = FakeLLM()
-        self.chat = FakeChat()
-        self.message = FakeMessage()
+        self.fixtures = {
+            "send": FakeSend(), "config": FakeConfigCap(plugin_configs), "llm": FakeLLM(),
+            "chat": FakeChat(), "message": FakeMessage(),
+        }
+        async def rpc(method, plugin_id, payload, **kwargs):
+            section, name = payload["capability"].split(".", 1)
+            args = payload.get("args") or {}
+            if section == "config" and name == "get":
+                return {"success": True, "value": await self.fixtures[section].get(**args)}
+            if section == "send":
+                await self.fixtures[section].text(**args)
+                return {"success": True}
+            return await getattr(self.fixtures[section], name)(**args)
+        super().__init__("octmicy.mai-gatekeeper", rpc_call=rpc)
+        self.send.sent = self.fixtures["send"].sent
+        self.config.values = self.fixtures["config"].values
+        self.config.values["plugin.permission"] = []
         self.paths = FakePaths(data_dir)
 
 
@@ -139,6 +153,7 @@ class FakeObClient:
 
     def __init__(self, ok: bool = True, fail_actions: set[str] | None = None) -> None:
         self.connected = True
+        self.self_id = "90000"
         self.ok = ok
         self.fail_actions = fail_actions or set()
         self.actions: list[dict[str, Any]] = []
@@ -200,6 +215,24 @@ def make_plugin(overrides: dict[str, Any] | None = None) -> tuple[Any, FakeCtx]:
     plugin = MaiGateKeeper()
     plugin._set_context(ctx)
     plugin._plugin_config_instance = GateKeeperConfig(**cfg)
+    # Synthetic Host bridge, not model kwargs. Production methods are tested unwrapped separately.
+    for name in ("tool_block_user", "tool_unblock_user", "tool_remove_friend"):
+        method = getattr(plugin, name)
+        async def invoke(_method=method, _name=name, **kw):
+            group = str(kw.get("group_id") or "")
+            sid = str(kw.get("stream_id") or ("stream-g-" + group if group else "private"))
+            kw.setdefault("_host_context", {
+                "contract": "neko.tools.context.v1", "session_id": sid, "stream_id": sid,
+                "platform": kw.get("platform", "qq"), "group_id": group,
+                "user_id": kw.get("user_id", "") if _name == "tool_remove_friend" else "60000",
+                "account_id": "90000",
+            })
+            return await _method(**kw)
+        setattr(plugin, name, invoke)
+    original_event = plugin._on_ob_event
+    async def event(payload):
+        return await original_event({"self_id": "90000", **payload})
+    plugin._on_ob_event = event
     plugin.__test_tmp_dir = tmp_dir  # 便于用例清理
     return plugin, ctx
 
@@ -327,7 +360,7 @@ async def _setup_approval(mode: str, llm: FakeLLM | None = None) -> tuple[Any, F
     client = FakeObClient()
     plugin._client = client
     if llm is not None:
-        ctx.llm = llm
+        ctx.fixtures["llm"] = llm
     return plugin, ctx, client
 
 
@@ -449,7 +482,7 @@ async def test_friend_request_flows() -> None:
     )
     expired_row = row_id_by_flag(store, "FLAG-6")
     reply = await plugin._handle_fr_command(f"/fr ok {expired_row}", "10001")
-    check("flag 失效标记 expired", store.get_friend_request(expired_row)["status"] == "expired" and "过期" in reply)
+    check("对端失败不能证明过期，持久 failed 禁重放", store.get_friend_request(expired_row)["status"] == "failed" and "不推断" in reply)
     await plugin.on_unload()
 
     # 非 friend 的 request（加群）与普通事件：忽略
@@ -470,9 +503,10 @@ async def test_tools() -> None:
     store = plugin._require_store()
     client = FakeObClient()
     plugin._client = client
-    ctx.message = FakeMessage(
+    ctx.fixtures["message"] = FakeMessage(
         {
             "m-1": {
+                "session_id": "stream-g-70001", "account_id": "90000", "platform": "qq",
                 "message_info": {
                     "user_info": {"user_id": "50001", "user_nickname": "捣蛋鬼"},
                     "group_info": {"group_id": "70001"},

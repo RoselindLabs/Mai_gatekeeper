@@ -2,7 +2,7 @@
   "manifest_version": 2,
   "id": "octmicy.mai-gatekeeper",
   "name": "麦麦守门人",
-  "version": "0.6.7",
+  "version": "0.6.8",
   "description": "好友申请审批（LLM 自动 / 管理员人工 / 混合）+ 用户屏蔽（发言拦截、私聊删好友）插件。自建 OneBot v11 正向 WebSocket 直连 NapCat / SnowLuma 对端，无需修改适配器。",
   "author": {
     "name": "octmicy",
@@ -10,16 +10,16 @@
   },
   "license": "MIT",
   "urls": {
-    "repository": "https://github.com/octmicy/Mai_gatekeeper",
-    "homepage": "https://github.com/octmicy/Mai_gatekeeper",
+    "repository": "https://github.com/znzsofficial/Mai_gatekeeper",
+    "homepage": "https://github.com/znzsofficial/Mai_gatekeeper",
     "documentation": "https://docs.mai-mai.org"
   },
   "host_application": {
-    "min_version": "1.3.0",
+    "min_version": "1.3.19",
     "max_version": "1.3.99"
   },
   "sdk": {
-    "min_version": "2.6.0",
+    "min_version": "2.20.0",
     "max_version": "2.91.99"
   },
   "dependencies": [],

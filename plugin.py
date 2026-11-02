@@ -10,8 +10,8 @@
   屏蔽作用域为本群且受 ``block.max_duration_hours`` 时长上限约束——
   默认一天，到期自动解除；屏蔽成功后向当前会话发送提示告知对方）
   + ``remove_friend``（仅私聊删好友）。被屏蔽用户的
-  发言在 ``chat.receive.before_process`` 阶段 abort——不入库、不建会话、
-  不触发回复、不计频率。
+   发言在本插件的 ``chat.receive.before_process`` Hook 处 abort；
+   不保证先于同槽第三方 Hook，不撤销已启动的任务或共享 Focus 历史。
 - 管理命令：/fr（好友申请 list/ok/no）、/block（屏蔽名单 list/un/add）。
   管理员为 config [admin].admin_ids（空名单 fail-closed 全拒），
   主程序级操作员（is_local_operator）放行。
@@ -28,6 +28,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -78,11 +79,18 @@ class MaiGateKeeper(MaiBotPlugin):
     _active_ob_config: OneBotConnectionConfig | None = None
     _block_sweep_task: asyncio.Task[None] | None = None
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._lifecycle_lock = asyncio.Lock()
+        self._generation = 0
+        self._closing = False
+
     # ------------------------------------------------------------------
     # 生命周期
     # ------------------------------------------------------------------
 
     async def on_load(self) -> None:
+        self._closing = False
         if not self.config.plugin.enabled:
             LOGGER.info("守门人插件已在配置中停用，跳过初始化")
             return
@@ -113,9 +121,15 @@ class MaiGateKeeper(MaiBotPlugin):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                LOGGER.debug(f"守门人屏蔽到期清理失败: {exc}")
+                LOGGER.debug("守门人屏蔽到期清理失败 (%s)", type(exc).__name__)
 
     async def on_unload(self) -> None:
+        self._generation += 1
+        self._closing = True
+        async with self._lifecycle_lock:
+            await self._unload_locked()
+
+    async def _unload_locked(self) -> None:
         if self._block_sweep_task is not None:
             self._block_sweep_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -124,6 +138,7 @@ class MaiGateKeeper(MaiBotPlugin):
         if self._client is not None:
             await self._client.stop()
             self._client = None
+        self._active_ob_config = None
         if self._store is not None:
             self._store.close()
             self._store = None
@@ -131,6 +146,11 @@ class MaiGateKeeper(MaiBotPlugin):
     async def on_config_update(self, scope: str, config_data: dict, version: str) -> None:
         if scope != "self":
             return
+        self._generation += 1
+        async with self._lifecycle_lock:
+            await self._config_update_locked()
+
+    async def _config_update_locked(self) -> None:
         if not self.config.plugin.enabled:
             if self._block_sweep_task is not None:
                 self._block_sweep_task.cancel()
@@ -138,6 +158,7 @@ class MaiGateKeeper(MaiBotPlugin):
             if self._client is not None:
                 await self._client.stop()
                 self._client = None
+            self._active_ob_config = None
             LOGGER.info("守门人插件已被停用")
             return
         if self._store is None:
@@ -161,6 +182,10 @@ class MaiGateKeeper(MaiBotPlugin):
         """
         new_config = await self._resolve_ob_config()
         if new_config is None:
+            if self._client is not None:
+                await self._client.stop()
+                self._client = None
+            self._active_ob_config = None
             LOGGER.warning(
                 "守门人 OneBot 连接配置不完整：请在插件配置的 [ob] 中填写对端地址（server）"
                 "与端口（port）。填写保存后将自动连接。"
@@ -203,22 +228,30 @@ class MaiGateKeeper(MaiBotPlugin):
 
     async def _on_ob_event(self, payload: dict[str, Any]) -> None:
         """处理 OneBot 事件（当前只关心好友申请）。"""
+        if not self._tool_ready():
+            return
         if str(payload.get("post_type") or "") != "request":
             return
         if str(payload.get("request_type") or "") != "friend":
             return
         flag = str(payload.get("flag") or "").strip()
         user_id = str(payload.get("user_id") or "").strip()
-        comment = str(payload.get("comment") or "").strip()
-        if not flag or not user_id:
+        comment = str(payload.get("comment") or "").strip()[:2000]
+        account = str(getattr(self._client, "self_id", "") or "")
+        if (not flag or len(flag) > 1024 or not user_id or len(user_id) > 64
+                or not account or str(payload.get("self_id") or "") != account):
             return
 
         store = self._require_store()
+        owner = self._client
+        generation = self._generation
         nickname = await self._fetch_nickname(user_id)
-        row_id = store.add_friend_request(flag, user_id, nickname, comment)
+        if owner is not self._client or generation != self._generation or not self._tool_ready():
+            return
+        row_id = store.add_friend_request(flag, user_id, nickname, comment, account)
         if row_id is None:
             return  # 同一 flag 重复推送，忽略
-        LOGGER.info(f"守门人收到好友申请 #{row_id}: {user_id}（{nickname}）验证消息: {comment!r}")
+        LOGGER.info("守门人收到好友申请 #%s", row_id)
         await self._dispatch_friend_request(row_id, user_id, nickname, comment)
 
     async def _dispatch_friend_request(
@@ -226,12 +259,15 @@ class MaiGateKeeper(MaiBotPlugin):
     ) -> None:
         """按审批模式分发好友申请。"""
         approve_cfg = self.config.approve
+        generation = self._generation
+        owner = self._client
         store = self._require_store()
         platform = self.config.admin.platform
 
         if store.is_blocked_any_scope(platform, user_id):
             # 命中屏蔽名单：任何模式都直接拒绝（结果推送由 _execute_decision 统一发出）
-            await self._execute_decision(row_id, False, "auto:blocked", "命中屏蔽名单，自动拒绝")
+            await self._execute_decision(row_id, False, "auto:blocked", "命中屏蔽名单，自动拒绝",
+                                         generation=generation, owner=owner)
             return
 
         if approve_cfg.mode == "manual":
@@ -239,6 +275,9 @@ class MaiGateKeeper(MaiBotPlugin):
             return
 
         review = await self._llm_review(user_id, nickname, comment)
+        if generation != self._generation or owner is not self._client or not self._tool_ready():
+            return  # retained pending; do not execute stale policy or notify a new account
+        approve_cfg = self.config.approve
         if review is None:
             note = "（LLM 审批失败，转人工）" if approve_cfg.mode == "hybrid" else "（LLM 审批失败）"
             await self._push_request_card(row_id, user_id, nickname, comment, llm_summary=note)
@@ -253,7 +292,8 @@ class MaiGateKeeper(MaiBotPlugin):
 
         if direct_execute:
             decided_by = f"llm:auto(conf={confidence:.2f})"
-            await self._execute_decision(row_id, approve, decided_by, reason)
+            await self._execute_decision(row_id, approve, decided_by, reason,
+                                         generation=generation, owner=owner, confidence=confidence)
         else:
             llm_summary = (
                 f"LLM 建议{'同意' if approve else '拒绝'}（置信 {confidence:.2f}，低于阈值，"
@@ -264,31 +304,33 @@ class MaiGateKeeper(MaiBotPlugin):
     async def _llm_review(self, user_id: str, nickname: str, comment: str) -> dict[str, Any] | None:
         """调用 LLM 审查好友申请；失败返回 None（调用方负责降级转人工）。"""
         user_content = (
-            f"申请人QQ：{user_id}\n昵称：{nickname or '（未知）'}\n验证消息：{comment or '（空）'}"
+            f"申请人QQ：{user_id[:64]}\n昵称：{nickname[:100] or '（未知）'}\n验证消息：{comment[:2000] or '（空）'}"
         )
         extra_rules = self.config.approve.extra_rules.strip()
         if extra_rules:
-            user_content += f"\n补充规则：{extra_rules}"
+            user_content += f"\n补充规则：{extra_rules[:4000]}"
 
         try:
-            result = await self.ctx.llm.generate(
+            result = await asyncio.wait_for(self.ctx.llm.generate(
                 prompt=[
                     {"role": "system", "content": _LLM_SYSTEM_PROMPT},
                     {"role": "user", "content": user_content},
                 ],
                 task_name="utils",
-            )
+            ), timeout=60)
         except Exception as exc:
-            LOGGER.warning(f"守门人 LLM 审批调用失败: {exc}")
+            LOGGER.warning("守门人 LLM 审批调用失败 (%s)", type(exc).__name__)
             return None
         if not isinstance(result, dict) or not result.get("success"):
-            LOGGER.warning(f"守门人 LLM 审批未成功: {result}")
+            LOGGER.warning("守门人 LLM 审批未成功")
             return None
         return self._parse_review(str(result.get("response") or ""))
 
     @staticmethod
     def _parse_review(text: str) -> dict[str, Any] | None:
         """从 LLM 回复中解析审批 JSON；解析失败返回 None。"""
+        if len(text) > 8192:
+            return None
         text = text.strip()
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE).strip()
         match = _JSON_OBJECT_RE.search(text)
@@ -301,60 +343,85 @@ class MaiGateKeeper(MaiBotPlugin):
         if not isinstance(data, dict) or not isinstance(data.get("approve"), bool):
             return None
         try:
-            confidence = max(0.0, min(1.0, float(data.get("confidence", 0.0))))
+            confidence = float(data.get("confidence", 0.0))
+            if not math.isfinite(confidence):
+                return None
+            confidence = max(0.0, min(1.0, confidence))
         except (TypeError, ValueError):
             confidence = 0.0
         reason = str(data.get("reason") or "").strip()[:80]
         return {"approve": data["approve"], "confidence": confidence, "reason": reason}
 
     async def _execute_decision(
-        self, row_id: int, approve: bool, decided_by: str, reason: str
+        self, row_id: int, approve: bool, decided_by: str, reason: str,
+        *, generation: int | None = None, owner: Any = None, confidence: float = 0,
     ) -> str:
-        """执行审批决定，返回处理结果（approved/rejected/expired/offline/not_pending）。"""
+        """Persist intent before dispatch; any uncertain result is terminal unknown."""
+        async with self._lifecycle_lock:
+            if not self._tool_ready():
+                return "offline"
+            if generation is not None:
+                if generation != self._generation or owner is not self._client:
+                    return "policy_changed"
+                cfg = self.config.approve
+                if decided_by.startswith("llm:") and not (
+                    cfg.mode == "auto" or cfg.mode == "hybrid" and confidence >= cfg.confidence_threshold
+                ):
+                    return "policy_changed"
+            status, request = await self._decision_locked(row_id, approve, decided_by, reason)
+        # Notification is not part of the action transaction; never retry an action for it.
+        if status in ("approved", "rejected") and self.config.approve.notify_admin_on_decision:
+            try:
+                await self._push_admins(
+                    f"【守门人】好友申请 #{row_id} {request['user_id']} 已{'同意' if approve else '拒绝'}"
+                    f"（{decided_by}）：{reason[:80]}", account_id=request["account_id"]
+                )
+            except Exception:
+                LOGGER.warning("守门人审批结果已落库，通知失败；不会重放动作")
+        return status
+
+    async def _decision_locked(self, row_id: int, approve: bool, decided_by: str, reason: str) -> tuple[str, Any]:
         store = self._require_store()
         request = store.get_friend_request(row_id)
         if request is None or request["status"] != "pending":
-            return "not_pending"
+            return "not_pending", request
 
         client = self._client
         if client is None or not client.connected:
             LOGGER.warning(f"守门人处理申请 #{row_id} 时 OneBot 对端未连接，保持 pending")
-            return "offline"
+            return "offline", request
+        account = str(getattr(client, "self_id", "") or "")
+        if not account or request["account_id"] != account:
+            return "unscoped", request
+        if not store.claim_request(row_id, account, decided_by, reason[:80]):
+            return "not_pending", request
 
         try:
             response = await client.call_action(
                 "set_friend_add_request", {"flag": request["flag"], "approve": bool(approve)}
             )
-        except Exception as exc:
-            store.update_friend_request(row_id, "expired", decided_by, f"action 调用失败: {exc}")
-            LOGGER.warning(f"守门人审批申请 #{row_id} action 失败: {exc}")
-            return "expired"
-
-        ok = isinstance(response, dict) and (
-            str(response.get("status") or "") == "ok" or response.get("retcode") == 0
+        except BaseException as exc:
+            store.finish_request(row_id, "unknown")
+            if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+                raise
+            LOGGER.warning("守门人审批 #%s 结果未知 (%s)，禁止重放", row_id, type(exc).__name__)
+            return "unknown", request
+        status = ("approved" if approve else "rejected") if self._action_ok(response) else (
+            "failed" if self._action_failed(response) else "unknown"
         )
-        if ok:
-            status = "approved" if approve else "rejected"
-            store.update_friend_request(row_id, status, decided_by, reason)
-            LOGGER.info(f"守门人申请 #{row_id} {status}（{decided_by}）：{reason}")
+        store.finish_request(row_id, status)
+        LOGGER.info("守门人审批 #%s: %s", row_id, status)
+        return status, request
 
-            # 审批结果通知全部管理员（统一出口，覆盖所有路径：
-            # LLM 自动 / 管理员命令 / 命中屏蔽自动拒绝）
-            if self.config.approve.notify_admin_on_decision:
-                action = "同意" if approve else "拒绝"
-                reason_note = f"：{reason}" if reason else ""
-                await self._push_admins(
-                    f"【守门人】好友申请 #{row_id} {request['user_id']}"
-                    f"（{request['nickname'] or '未知昵称'}）已{action}（{decided_by}）{reason_note}"
-                )
-            return status
+    @staticmethod
+    def _action_ok(response: Any) -> bool:
+        return (isinstance(response, dict) and response.get("status") == "ok"
+                and type(response.get("retcode")) is int and response["retcode"] == 0)
 
-        detail = ""
-        if isinstance(response, dict):
-            detail = str(response.get("word") or response.get("msg") or response.get("retcode") or "")
-        store.update_friend_request(row_id, "expired", decided_by, f"对端拒绝执行: {detail}")
-        LOGGER.warning(f"守门人申请 #{row_id} flag 已失效或执行失败: {detail}")
-        return "expired"
+    @staticmethod
+    def _action_failed(response: Any) -> bool:
+        return (isinstance(response, dict) and response.get("status") == "failed"
+                and type(response.get("retcode")) is int and response["retcode"] != 0)
 
     async def _push_request_card(
         self,
@@ -371,46 +438,72 @@ class MaiGateKeeper(MaiBotPlugin):
         if llm_summary:
             lines.append(llm_summary)
         lines.append(f"回复 /fr ok {row_id} 同意 · /fr no {row_id} 拒绝")
-        await self._push_admins("\n".join(lines))
+        request = self._store.get_friend_request(row_id) if self._store else None
+        if request and request["account_id"]:
+            await self._push_admins("\n".join(lines), account_id=request["account_id"])
 
-    async def _push_admins(self, text: str) -> None:
+    async def _push_admins(self, text: str, *, account_id: str = "") -> None:
         """把文本推送到所有管理员的私聊会话。"""
+        owner = self._client
+        account = str(getattr(owner, "self_id", "") or "")
+        generation = self._generation
+        if not account or account_id and account_id != account:
+            return
         admin_ids = [str(a).strip() for a in self.config.admin.admin_ids if str(a).strip()]
         if not admin_ids:
-            LOGGER.info(f"守门人无管理员可推送: {text[:50]}")
+            LOGGER.info("守门人无管理员可推送")
             return
         for admin_id in admin_ids:
-            stream_id = await self._resolve_admin_stream(admin_id)
-            if not stream_id:
-                LOGGER.warning(f"守门人无法定位管理员 {admin_id} 的私聊会话")
-                continue
             try:
+                stream_id = await self._resolve_admin_stream(admin_id)
+                if (owner is not self._client or generation != self._generation
+                        or str(getattr(owner, "self_id", "") or "") != account or not self._tool_ready()):
+                    return
+                if not stream_id:
+                    LOGGER.warning("守门人无法定位管理员私聊会话")
+                    continue
                 await self.ctx.send.text(text, stream_id)
             except Exception as exc:
-                LOGGER.warning(f"守门人推送管理员 {admin_id} 失败: {exc}")
+                LOGGER.warning("守门人推送管理员失败 (%s)", type(exc).__name__)
 
     async def _resolve_admin_stream(self, admin_id: str) -> str | None:
         """定位（必要时创建）管理员私聊会话，返回 stream_id。"""
         platform = self.config.admin.platform
-        try:
-            result = await self.ctx.chat.get_stream_by_user_id(admin_id, platform=platform)
-            stream = result.get("stream") if isinstance(result, dict) else None
-            if isinstance(stream, dict) and stream.get("stream_id"):
-                return str(stream["stream_id"])
-        except Exception as exc:
-            LOGGER.warning(f"守门人查询管理员 {admin_id} 会话失败: {exc}")
+        client = self._client
+        account = str(getattr(client, "self_id", "") or "")
+        if not account:
+            return None
+
+        def current() -> bool:
+            return client is self._client and str(getattr(client, "self_id", "") or "") == account
+
+        def match(stream: Any) -> str | None:
+            if (isinstance(stream, dict) and str(stream.get("account_id") or "") == account
+                    and stream.get("platform") == platform and str(stream.get("user_id") or "") == admin_id
+                    and not stream.get("group_id") and stream.get("chat_type") == "private"):
+                return str(stream.get("stream_id") or stream.get("session_id") or "") or None
+            return None
 
         try:
+            result = await self.ctx.chat.get_stream_by_user_id(admin_id, platform=platform)
+            stream_id = match(result)  # SDK2.20 already unwraps chat lookup results.
+            if stream_id and current():
+                return stream_id
+        except Exception as exc:
+            LOGGER.warning("守门人查询管理员会话失败 (%s)", type(exc).__name__)
+
+        try:
+            if not current():
+                return None
             result = await self.ctx.chat.open_session(
-                platform=platform, chat_type="private", user_id=admin_id
+                platform=platform, chat_type="private", user_id=admin_id, account_id=account
             )
             if isinstance(result, dict) and result.get("success"):
-                stream = result.get("stream") or {}
-                stream_id = stream.get("stream_id") or result.get("stream_id")
-                if stream_id:
-                    return str(stream_id)
+                stream_id = match(result.get("stream") or result)
+                if stream_id and current():
+                    return stream_id
         except Exception as exc:
-            LOGGER.warning(f"守门人为管理员 {admin_id} 创建会话失败: {exc}")
+            LOGGER.warning("守门人创建管理员会话失败 (%s)", type(exc).__name__)
         return None
 
     async def _fetch_nickname(self, user_id: str) -> str:
@@ -424,9 +517,9 @@ class MaiGateKeeper(MaiBotPlugin):
             )
             data = response.get("data") if isinstance(response, dict) else None
             if isinstance(data, dict):
-                return str(data.get("nickname") or "")
+                return str(data.get("nickname") or "")[:100]
         except Exception as exc:
-            LOGGER.debug(f"守门人获取 {user_id} 昵称失败: {exc}")
+            LOGGER.debug("守门人获取昵称失败 (%s)", type(exc).__name__)
         return ""
 
     @staticmethod
@@ -450,7 +543,7 @@ class MaiGateKeeper(MaiBotPlugin):
     @HookHandler(
         "chat.receive.before_process",
         name="gatekeeper_intercept",
-        description="拦截被屏蔽用户的发言（abort 后消息完全丢弃：不入库、不回复、不计频率）",
+        description="本 Hook 运行时拦截被屏蔽用户发言；不撤销先前第三方 Hook 的副作用",
         mode=HookMode.BLOCKING,
         order=HookOrder.EARLY,
         error_policy=ErrorPolicy.SKIP,
@@ -477,9 +570,7 @@ class MaiGateKeeper(MaiBotPlugin):
         group_id = str((group_info or {}).get("group_id") or "").strip()
 
         if store.is_blocked(platform, user_id, group_id):
-            LOGGER.info(
-                f"守门人拦截被屏蔽用户 {user_id} 的发言（platform={platform}, group={group_id or '私聊'}）"
-            )
+            LOGGER.debug("守门人拦截被屏蔽用户发言")
             return {"action": "abort"}
         return None
 
@@ -489,6 +580,7 @@ class MaiGateKeeper(MaiBotPlugin):
 
     @Tool(
         name="block_user",
+        trusted_context="neko.tools.context.v1",
         description=(
             "屏蔽当前群聊中的一个用户，使其在本群的发言被机器人完全忽略。仅群聊可用，屏蔽只对本群生效。"
             "仅用于应对持续骚扰、刷屏、恶意行为的用户，不要对正常用户使用。"
@@ -496,7 +588,7 @@ class MaiGateKeeper(MaiBotPlugin):
         ),
         brief_description="屏蔽群聊用户（有时效），使其发言被机器人忽略",
         detailed_description=(
-            "屏蔽后该用户的消息在入站最早期被丢弃（不入库、不触发回复），并向群里发送一条提示。"
+            "屏蔽后该用户的新消息在本插件入站 Hook 处被丢弃，并向群里发送一条提示；不保证先于其他插件。"
             "优先通过 message_id（该用户发过的任意一条消息ID）精确定位发送者，"
             "其次直接给 user_id。duration_hours 可指定更短时长，最大不超过配置的上限"
             "（默认 24 小时），到期自动解除。管理员与保护名单用户不可被屏蔽。"
@@ -539,23 +631,32 @@ class MaiGateKeeper(MaiBotPlugin):
         """planner 屏蔽用户工具（仅群聊，受配置的时长上限约束）。"""
         if not self._tool_ready():
             return {"success": False, "content": "守门人插件未就绪"}
+        identity = self._trusted_identity(kwargs)
+        if identity is None:
+            return {"success": False, "content": "缺少可信会话或账号身份，拒绝执行"}
+        kwargs = identity
+        generation = self._generation
         group_id = str(kwargs.get("group_id") or "").strip()
         if not group_id:
             # 双保险：chat_scope 应已限制工具只在群聊出现
             return {"success": False, "content": "该工具仅限群聊使用（私聊请使用 remove_friend）"}
         store = self._require_store()
 
-        target, nickname = await self._resolve_target(message_id, user_id)
+        target, nickname = await self._resolve_target(message_id, user_id, identity)
         if not target:
             return {"success": False, "content": "需要 message_id 或 user_id 之一来定位要屏蔽的用户"}
 
         platform = str(kwargs.get("platform") or self.config.admin.platform)
 
-        if self._is_protected(target):
+        if await self._is_protected(target, identity):
             return {"success": False, "content": f"用户 {target} 在保护名单中，不可屏蔽"}
+        if generation != self._generation or not self._tool_ready():
+            return {"success": False, "content": "策略已变化，拒绝执行"}
 
         # 时长上限：>0 时屏蔽带到期时间；planner 指定的时长被钳制到上限内
         cap_hours = float(self.config.block.max_duration_hours or 0)
+        if not math.isfinite(cap_hours) or cap_hours < 0:
+            return {"success": False, "content": "屏蔽时长配置无效，拒绝执行"}
         expires_at = ""
         duration_text = ""
         if cap_hours > 0:
@@ -563,7 +664,7 @@ class MaiGateKeeper(MaiBotPlugin):
                 hours = float(duration_hours or 0)
             except (TypeError, ValueError):
                 hours = 0
-            if hours <= 0 or hours > cap_hours:
+            if not math.isfinite(hours) or hours <= 0 or hours > cap_hours:
                 hours = cap_hours
             # 保留微秒精度：截断到秒会让短时长屏蔽立即过期
             expires_at = (datetime.now() + timedelta(hours=hours)).isoformat()
@@ -577,10 +678,7 @@ class MaiGateKeeper(MaiBotPlugin):
         if not added:
             return {"success": False, "content": f"用户 {nickname or target} 在本群（{group_id}）已被屏蔽"}
 
-        LOGGER.info(
-            f"守门人屏蔽用户 {target}（{nickname}）范围 {scope}，"
-            f"操作者 planner:{caller}，到期: {expires_at or '永久'}，原因: {reason}"
-        )
+        LOGGER.info("守门人已添加群级屏蔽")
 
         # 向当前会话发送提示，告知对方已被屏蔽（文案模板可在配置中自定义）
         if self.config.block.notify_blocked_user:
@@ -594,15 +692,13 @@ class MaiGateKeeper(MaiBotPlugin):
                 try:
                     await self.ctx.send.text(tip, stream_id)
                 except Exception as exc:
-                    LOGGER.warning(f"守门人发送屏蔽提示失败: {exc}")
+                    LOGGER.warning("守门人发送屏蔽提示失败 (%s)", type(exc).__name__)
 
         if self.config.block.notify_admin_on_block:
-            asyncio.create_task(
-                self._push_admins(
+            await self._notify_admins(
                     f"【守门人】planner 已屏蔽用户 {target}（{nickname or '未知昵称'}），"
                     f"范围：本群（{group_id}），时长：{duration_text or '永久'}，"
-                    f"原因：{reason or '未填写'}。可用 /block un 解除。"
-                )
+                    f"原因：{reason or '未填写'}。可用 /block un 解除。", account_id=identity["account_id"]
             )
         duration_note = f"，时长 {duration_text}" if duration_text else ""
         return {
@@ -612,6 +708,7 @@ class MaiGateKeeper(MaiBotPlugin):
 
     @Tool(
         name="unblock_user",
+        trusted_context="neko.tools.context.v1",
         description="解除某用户在本群的屏蔽（撤销 block_user 的效果）。仅群聊可用。",
         brief_description="解除群聊用户的屏蔽",
         detailed_description=(
@@ -639,14 +736,21 @@ class MaiGateKeeper(MaiBotPlugin):
         """planner 解除屏蔽工具（仅群聊）。"""
         if not self._tool_ready():
             return {"success": False, "content": "守门人插件未就绪"}
+        identity = self._trusted_identity(kwargs)
+        if identity is None:
+            return {"success": False, "content": "缺少可信会话或账号身份，拒绝执行"}
+        kwargs = identity
+        generation = self._generation
         group_id = str(kwargs.get("group_id") or "").strip()
         if not group_id:
             return {"success": False, "content": "该工具仅限群聊使用"}
         store = self._require_store()
 
-        target, _nickname = await self._resolve_target(message_id, user_id)
+        target, _nickname = await self._resolve_target(message_id, user_id, identity)
         if not target:
             return {"success": False, "content": "需要 message_id 或 user_id 之一来定位用户"}
+        if generation != self._generation or not self._tool_ready():
+            return {"success": False, "content": "策略已变化，拒绝执行"}
 
         platform = str(kwargs.get("platform") or self.config.admin.platform)
         group_id = str(kwargs.get("group_id") or "").strip()
@@ -658,6 +762,7 @@ class MaiGateKeeper(MaiBotPlugin):
 
     @Tool(
         name="remove_friend",
+        trusted_context="neko.tools.context.v1",
         description=(
             "删除当前私聊对象的好友关系（私聊专用）。"
             "目标固定为当前对话的对方，无法指定其他人。"
@@ -681,87 +786,123 @@ class MaiGateKeeper(MaiBotPlugin):
     async def tool_remove_friend(self, reason: str = "", **kwargs: Any) -> dict[str, Any]:
         """私聊删好友工具（目标固定为当前对话对象）。
 
-        安全约束：不提供 user_id 参数——LLM 若能传同名参数会覆盖 Host
-        注入的真实发送者（component_query 的合并规则是工具参数优先），
-        等于可以指定删除任意好友。目标只能取自 kwargs["user_id"]，
-        即 Host 从消息上下文注入的当前私聊对象。
+        目标只能取自 Host opt-in 信封，不读取模型可覆盖的普通 kwargs。
         """
         if not self._tool_ready():
             return {"success": False, "content": "守门人插件未就绪"}
         if not self.config.block.allow_remove_friend:
             return {"success": False, "content": "删好友功能已在配置中关闭"}
-
-        peer = str(kwargs.get("user_id") or "").strip()
-        if not peer:
+        identity = self._trusted_identity(kwargs)
+        if identity is None or identity["group_id"]:
             return {"success": False, "content": "无法确定当前对话对象，拒绝执行删除"}
-
-        if self._is_protected(peer):
+        peer = identity["user_id"]
+        generation = self._generation
+        if await self._is_protected(peer, identity):
             return {"success": False, "content": f"用户 {peer} 在保护名单中，不可删除好友"}
-
-        client = self._client
-        if client is None or not client.connected:
-            return {"success": False, "content": "OneBot 对端未连接，暂时无法删除好友"}
-
-        store = self._require_store()
-        platform = str(kwargs.get("platform") or self.config.admin.platform)
-
-        try:
-            response = await client.call_action(
-                "delete_friend", {"user_id": self._to_int_or_str(peer)}
-            )
-        except Exception as exc:
-            LOGGER.warning(f"守门人删除好友 {peer} 失败: {exc}")
-            return {"success": False, "content": f"删除好友失败：{exc}"}
-
-        ok = isinstance(response, dict) and (
-            str(response.get("status") or "") == "ok" or response.get("retcode") == 0
-        )
-        if not ok:
-            detail = ""
-            if isinstance(response, dict):
-                detail = str(response.get("word") or response.get("msg") or response.get("retcode") or "")
-            return {"success": False, "content": f"对端执行失败：{detail}"}
-
-        # 删除好友后自动全局屏蔽，防止对方再次申请（申请也会被自动拒绝）
-        store.add_blocked(platform, peer, GLOBAL_SCOPE, f"删除好友自动屏蔽：{reason.strip()}", "auto")
-        LOGGER.info(f"守门人已删除好友 {peer}，原因: {reason}，并自动全局屏蔽")
+        async with self._lifecycle_lock:
+            client = self._client
+            if (not self._tool_ready() or not self.config.block.allow_remove_friend
+                    or generation != self._generation or client is None or not client.connected
+                    or str(getattr(client, "self_id", "") or "") != identity["account_id"]):
+                return {"success": False, "content": "连接、账号或策略已变化，拒绝执行"}
+            store = self._require_store()
+            platform = identity["platform"]
+            key = json.dumps([platform, identity["account_id"], peer], separators=(",", ":"))
+            if not store.claim_action("delete_friend", key):
+                return {"success": False, "content": "该删除操作已有持久记录，禁止自动重放；需人工核验"}
+            try:
+                response = await client.call_action("delete_friend", {"user_id": self._to_int_or_str(peer)})
+            except BaseException as exc:
+                store.finish_action("delete_friend", key, "unknown")
+                if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+                    raise
+                return {"success": False, "content": "删除结果未知，禁止重试；需人工核验"}
+            status = "succeeded" if self._action_ok(response) else (
+                "failed" if self._action_failed(response) else "unknown")
+            store.finish_action("delete_friend", key, status)
+            if status != "succeeded":
+                return {"success": False, "content": f"删除结果 {status}，禁止自动重放；需人工核验"}
+            store.add_blocked(platform, peer, GLOBAL_SCOPE, f"删除好友自动屏蔽：{reason.strip()[:200]}", "auto")
+        LOGGER.info("守门人删除好友动作成功，已全局屏蔽")
 
         # 转告管理员（删好友不可逆）
         if self.config.block.notify_admin_on_remove:
-            asyncio.create_task(
-                self._push_admins(
+            await self._notify_admins(
                     f"【守门人】planner 已删除好友 {peer}，原因：{reason or '未填写'}，"
-                    "并已自动全局屏蔽（对方再次申请好友将被自动拒绝）。"
-                )
+                    "并已自动全局屏蔽（对方再次申请好友将被自动拒绝）。", account_id=identity["account_id"]
             )
         return {"success": True, "content": f"已删除好友 {peer} 并全局屏蔽其消息"}
 
+    async def _notify_admins(self, text: str, *, account_id: str = "") -> None:
+        try:
+            await self._push_admins(text, account_id=account_id)
+        except Exception:
+            LOGGER.warning("守门人动作已落库，通知失败；不会重放动作")
+
     def _tool_ready(self) -> bool:
         """插件总开关与存储就绪检查。"""
-        return bool(self.config.plugin.enabled) and self._store is not None
+        return bool(self.config.plugin.enabled) and self._store is not None and not self._closing
 
-    def _is_protected(self, user_id: str) -> bool:
+    async def _is_protected(self, user_id: str, identity: dict[str, str]) -> bool:
         """管理员与保护名单不可被屏蔽/删除。"""
         admins = {str(a).strip() for a in self.config.admin.admin_ids}
         protected = {str(p).strip() for p in self.config.block.protect_user_ids}
-        return user_id in admins or user_id in protected
+        if not user_id or not identity.get("account_id") or not identity.get("platform"):
+            return True
+        if user_id in admins or user_id in protected or user_id == identity["account_id"]:
+            return True
+        try:
+            permissions = await self.ctx.config.get("plugin.permission", None)
+        except Exception:
+            return True
+        if not isinstance(permissions, list):
+            return True
+        scoped = f"{identity['platform'].lower()}:{user_id}"
+        for permission in permissions:
+            parts = str(permission).split(":", 1)
+            if len(parts) != 2 or not all(p.strip() for p in parts):
+                return True
+            if f"{parts[0].strip().lower()}:{parts[1].strip()}" == scoped:
+                return True
+        return False
 
-    async def _resolve_target(self, message_id: str, user_id: str) -> tuple[str, str]:
+    @staticmethod
+    def _trusted_identity(kwargs: dict[str, Any]) -> dict[str, str] | None:
+        # Host replaces this envelope after model arguments, only for opted-in tools.
+        context = kwargs.get("_host_context")
+        if not isinstance(context, dict) or context.get("contract") != "neko.tools.context.v1":
+            return None
+        identity = {k: str(context.get(k) or "").strip() for k in (
+            "session_id", "stream_id", "platform", "group_id", "user_id", "account_id")}
+        if (not all(identity[k] for k in ("session_id", "platform", "user_id", "account_id"))
+                or identity["stream_id"] != identity["session_id"] or identity["platform"].lower() != "qq"):
+            return None
+        return identity
+
+    async def _resolve_target(self, message_id: str, user_id: str, identity: dict[str, str] | None = None) -> tuple[str, str]:
         """解析工具目标用户：优先 message_id 反查，其次 user_id。返回 (user_id, nickname)。"""
+        if identity is None:
+            return "", ""
         message_id = str(message_id or "").strip()
         if message_id:
             try:
-                result = await self.ctx.message.get_by_id(message_id)
+                result = await self.ctx.message.get_by_id(message_id, chat_id=identity["session_id"])
             except Exception as exc:
-                LOGGER.warning(f"守门人反查消息 {message_id} 失败: {exc}")
+                LOGGER.warning("守门人反查消息失败 (%s)", type(exc).__name__)
                 result = None
-            if isinstance(result, dict) and isinstance(result.get("message"), dict):
-                msg = result["message"]
+            if (isinstance(result, dict) and result.get("session_id") == identity["session_id"]
+                    and str(result.get("account_id") or "") == identity["account_id"]
+                    and result.get("platform") == identity["platform"]):
+                msg = result
                 info = msg.get("message_info") or {}
+                group = info.get("group_info") or {}
+                if str(group.get("group_id") or "") != identity["group_id"]:
+                    return "", ""
                 user_info = info.get("user_info") or {}
                 resolved = str(user_info.get("user_id") or "").strip()
                 if resolved:
                     return resolved, str(user_info.get("user_nickname") or "")
+            return "", ""  # bad message must never fall back to an unrelated supplied ID
         return str(user_id or "").strip(), ""
 
     # ------------------------------------------------------------------
@@ -775,6 +916,8 @@ class MaiGateKeeper(MaiBotPlugin):
     )
     async def cmd_fr(self, **kwargs: Any) -> tuple[bool, str, int]:
         """好友申请查看与审批。"""
+        if not self._tool_ready():
+            return (True, "守门人插件未就绪", 1)
         stream_id = str(kwargs.get("stream_id") or "")
         if not await self._is_admin(kwargs):
             reply = "仅管理员可使用该命令"
@@ -784,7 +927,7 @@ class MaiGateKeeper(MaiBotPlugin):
             try:
                 await self.ctx.send.text(reply, stream_id)
             except Exception as exc:
-                LOGGER.warning(f"守门人回复 /fr 失败: {exc}")
+                LOGGER.warning("守门人回复 /fr 失败 (%s)", type(exc).__name__)
         return (True, reply, 1)
 
     async def _handle_fr_command(self, text: str, admin_user_id: str) -> str:
@@ -793,10 +936,13 @@ class MaiGateKeeper(MaiBotPlugin):
         store = self._require_store()
 
         if sub == "list":
-            requests = store.list_friend_requests("pending", 10)
+            status = parts[2] if len(parts) > 2 else "pending"
+            if status not in {"pending", "executing", "unknown", "failed", "approved", "rejected", "expired"}:
+                return "不支持的状态"
+            requests = store.list_friend_requests(status, 10)
             if not requests:
                 return "当前没有待处理的好友申请"
-            lines = ["待处理好友申请（最新 10 条）："]
+            lines = [f"好友申请 {status}（最新 10 条）："]
             for req in requests:
                 comment = (req["comment"] or "（无验证消息）")[:30]
                 lines.append(f"#{req['id']} {req['user_id']}（{req['nickname'] or '未知'}）：{comment}")
@@ -816,6 +962,10 @@ class MaiGateKeeper(MaiBotPlugin):
                 "expired": "该申请已过期（flag 失效），对方需重新申请",
                 "offline": "OneBot 对端未连接，申请保持待处理，稍后重试",
                 "not_pending": "该申请不存在或已被处理",
+                "unknown": "结果未知，禁止自动重放，请人工核验对端记录",
+                "failed": "对端明确返回失败；不推断 flag 过期，禁止自动重放",
+                "unscoped": "申请缺少可验证的账号归属（含旧 pending），保留记录并拒绝执行；需人工核验",
+                "policy_changed": "审批策略已变化，申请保持待处理",
             }.get(outcome, f"处理异常（{outcome}）")
             return outcome_text
 
@@ -831,6 +981,8 @@ class MaiGateKeeper(MaiBotPlugin):
     )
     async def cmd_block(self, **kwargs: Any) -> tuple[bool, str, int]:
         """屏蔽名单查看与管理。"""
+        if not self._tool_ready():
+            return (True, "守门人插件未就绪", 1)
         stream_id = str(kwargs.get("stream_id") or "")
         if not await self._is_admin(kwargs):
             reply = "仅管理员可使用该命令"
@@ -845,7 +997,7 @@ class MaiGateKeeper(MaiBotPlugin):
             try:
                 await self.ctx.send.text(reply, stream_id)
             except Exception as exc:
-                LOGGER.warning(f"守门人回复 /block 失败: {exc}")
+                LOGGER.warning("守门人回复 /block 失败 (%s)", type(exc).__name__)
         return (True, reply, 1)
 
     async def _handle_block_command(
@@ -930,7 +1082,7 @@ class MaiGateKeeper(MaiBotPlugin):
         try:
             permissions = await self.ctx.config.get("plugin.permission", [])
         except Exception as exc:
-            LOGGER.debug(f"守门人读取主程序操作员配置失败: {exc}")
+            LOGGER.debug("守门人读取主程序操作员配置失败 (%s)", type(exc).__name__)
         if isinstance(permissions, list):
             platform = str(kwargs.get("platform") or "").strip().lower()
             scoped = f"{platform}:{user_id}"

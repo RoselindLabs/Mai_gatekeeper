@@ -181,10 +181,10 @@ class BlockSettings(PluginConfigBase):
 
     intercept_enabled: bool = Field(
         default=True,
-        description="拦截被屏蔽用户的发言（chat.receive.before_process 阶段 abort，消息完全丢弃）",
+        description="本插件 chat.receive.before_process Hook 运行时 abort 被屏蔽者的新消息，不保证先于其他插件",
         json_schema_extra={
             "label": "拦截被屏蔽用户的发言",
-            "hint": "开启后被屏蔽用户的消息在最早期被完全丢弃：不入库、不触发回复、不计频率。关闭后名单仍保留，仅停止拦截。",
+            "hint": "开启后本插件 Hook 丢弃被屏蔽者的新消息；不撤销先前插件任务或共享 Focus 历史。关闭后名单仍保留，仅停止拦截。",
         },
     )
     max_duration_hours: float = Field(
