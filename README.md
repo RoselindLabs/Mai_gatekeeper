@@ -9,6 +9,7 @@ MaiBot 插件：好友申请审批（LLM 自动 / 管理员人工 / 混合）+ �
 ## 环境要求
 
 - 当前验证目标 MaiBot 1.3.19 / SDK 2.20.0，Python 3.12+；需要宿主现有 `neko.tools.context.v1` 可信工具身份桥。缺桥或缺可信账号/会话身份时敏感工具拒绝执行，不信任模型传入的普通 kwargs。
+- 共享Focus无锚点时，群工具须给当前群真实message_id，经现有message.get_by_id核实会话/群/平台/账号与已登录OneBot一致；仅user_id不能补全未知账号。私聊可用现有查流接口核验真实目标，不创建新流补身份，不增加能力权限。
 - 对端为标准 OneBot v11 正向 WebSocket 服务端（NapCat / SnowLuma 均可），且允许多个客户端同时连接
 
 ## 安装

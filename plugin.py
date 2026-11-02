@@ -631,7 +631,7 @@ class MaiGateKeeper(MaiBotPlugin):
         """planner 屏蔽用户工具（仅群聊，受配置的时长上限约束）。"""
         if not self._tool_ready():
             return {"success": False, "content": "守门人插件未就绪"}
-        identity = self._trusted_identity(kwargs)
+        identity = await self._resolve_tool_identity(kwargs, message_id=message_id)
         if identity is None:
             return {"success": False, "content": "缺少可信会话或账号身份，拒绝执行"}
         kwargs = identity
@@ -736,7 +736,7 @@ class MaiGateKeeper(MaiBotPlugin):
         """planner 解除屏蔽工具（仅群聊）。"""
         if not self._tool_ready():
             return {"success": False, "content": "守门人插件未就绪"}
-        identity = self._trusted_identity(kwargs)
+        identity = await self._resolve_tool_identity(kwargs, message_id=message_id)
         if identity is None:
             return {"success": False, "content": "缺少可信会话或账号身份，拒绝执行"}
         kwargs = identity
@@ -792,7 +792,7 @@ class MaiGateKeeper(MaiBotPlugin):
             return {"success": False, "content": "守门人插件未就绪"}
         if not self.config.block.allow_remove_friend:
             return {"success": False, "content": "删好友功能已在配置中关闭"}
-        identity = self._trusted_identity(kwargs)
+        identity = await self._resolve_tool_identity(kwargs)
         if identity is None or identity["group_id"]:
             return {"success": False, "content": "无法确定当前对话对象，拒绝执行删除"}
         peer = identity["user_id"]
@@ -879,6 +879,59 @@ class MaiGateKeeper(MaiBotPlugin):
             return None
         return identity
 
+    async def _resolve_tool_identity(self, kwargs: dict[str, Any], *, message_id: str = "") -> dict[str, str] | None:
+        """Resolve anchorless Focus using an existing scoped message/stream, never model identity.
+
+        Host's opt-in envelope is authoritative for route, but its account/caller
+        may be absent in Focus. A connected, verified OneBot account alone is
+        insufficient: the actual stored message/private stream must match it.
+        """
+        direct = self._trusted_identity(kwargs)
+        if direct is not None:
+            return direct
+        context = kwargs.get('_host_context')
+        if not isinstance(context, dict) or context.get('contract') != 'neko.tools.context.v1':
+            return None
+        identity = {k: str(context.get(k) or '').strip() for k in (
+            'session_id', 'stream_id', 'platform', 'group_id', 'user_id', 'account_id')}
+        if (not identity['session_id'] or identity['stream_id'] != identity['session_id']
+                or identity['platform'] != 'qq' or identity['account_id']):
+            return None  # A nonempty but incomplete/conflicting envelope is not repaired.
+        client = self._client
+        account = str(getattr(client, 'self_id', '') or '')
+        if client is None or not client.connected or not account:
+            return None
+        if identity['group_id']:
+            if not message_id:
+                return None  # Direct arbitrary user ID cannot prove an anchorless group's account.
+            try:
+                source = await self.ctx.message.get_by_id(str(message_id), chat_id=identity['session_id'])
+            except Exception:
+                return None
+            group = (source.get('message_info') or {}).get('group_info') or {} if isinstance(source, dict) else {}
+            if (not isinstance(source, dict) or source.get('message_id') != str(message_id)
+                    or source.get('session_id') != identity['session_id'] or source.get('platform') != 'qq'
+                    or str(source.get('account_id') or '') != account
+                    or str(group.get('group_id') or '') != identity['group_id']):
+                return None
+        else:
+            if not identity['user_id']:
+                return None
+            try:
+                source = await self.ctx.chat.get_stream_by_user_id(identity['user_id'], platform='qq')
+            except Exception:
+                return None
+            if (not isinstance(source, dict)
+                    or str(source.get('session_id') or source.get('stream_id') or '') != identity['session_id']
+                    or str(source.get('account_id') or '') != account or source.get('platform') != 'qq'
+                    or str(source.get('user_id') or '') != identity['user_id']
+                    or source.get('group_id') or source.get('chat_type') not in ('private', None)):
+                return None
+        if client is not self._client or str(getattr(client, 'self_id', '') or '') != account:
+            return None
+        identity['account_id'] = account
+        return identity
+
     async def _resolve_target(self, message_id: str, user_id: str, identity: dict[str, str] | None = None) -> tuple[str, str]:
         """解析工具目标用户：优先 message_id 反查，其次 user_id。返回 (user_id, nickname)。"""
         if identity is None:
@@ -890,7 +943,8 @@ class MaiGateKeeper(MaiBotPlugin):
             except Exception as exc:
                 LOGGER.warning("守门人反查消息失败 (%s)", type(exc).__name__)
                 result = None
-            if (isinstance(result, dict) and result.get("session_id") == identity["session_id"]
+            if (isinstance(result, dict) and result.get('message_id') == message_id
+                    and result.get("session_id") == identity["session_id"]
                     and str(result.get("account_id") or "") == identity["account_id"]
                     and result.get("platform") == identity["platform"]):
                 msg = result

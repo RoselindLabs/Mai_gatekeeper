@@ -37,7 +37,7 @@ class Hardening(unittest.IsolatedAsyncioTestCase):
         self.actions = []
         self.rpc_calls = []
         self.permission = ["QQ:operator"]
-        self.message = dict(session_id="shared-focus-member", account_id="bot", platform="qq",
+        self.message = dict(message_id='m', session_id="shared-focus-member", account_id="bot", platform="qq",
             message_info={"group_info": {"group_id": "g"},
                           "user_info": {"user_id": "target", "user_nickname": "name"}})
 
@@ -71,6 +71,34 @@ class Hardening(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.store.is_blocked("qq", "fallback", "forged"))
         lookup = next(p for p in self.rpc_calls if p["capability"] == "message.get_by_id")
         self.assertEqual(lookup["args"]["chat_id"], "shared-focus-member")
+
+    async def test_anchorless_focus_identity_requires_matching_scoped_message(self):
+        envelope = identity(user='', account='')
+        result = await self.plugin.tool_block_user(message_id='m', _host_context=envelope,
+                                                   user_id='forged-caller', account_id='forged-account')
+        self.assertTrue(result['success'])
+        self.assertTrue(self.store.is_blocked('qq', 'target', 'g'))
+        self.assertEqual(self.actions, [])
+        await self.plugin.tool_unblock_user(message_id='m', _host_context=envelope)
+        self.message['account_id'] = 'foreign'
+        self.assertFalse((await self.plugin.tool_block_user(message_id='m', _host_context=envelope))['success'])
+        self.message['account_id'] = 'bot'
+        self.message['message_id'] = 'wrong-id'
+        self.assertFalse((await self.plugin.tool_block_user(message_id='m', _host_context=envelope))['success'])
+        self.assertFalse((await self.plugin.tool_block_user(user_id='target', _host_context=envelope))['success'])
+
+    async def test_anchorless_private_uses_existing_stream_without_opening(self):
+        calls = []
+        async def rpc(method, plugin_id, payload, **kwargs):
+            calls.append(payload['capability'])
+            self.assertEqual(payload['capability'], 'chat.get_stream_by_user_id')
+            return {'success': True, 'stream': {'stream_id': 's', 'platform':'qq',
+                    'account_id':'bot', 'user_id':'peer', 'chat_type':'private'}}
+        self.plugin._set_context(PluginContext('octmicy.mai-gatekeeper', rpc_call=rpc))
+        result = await self.plugin._resolve_tool_identity({'_host_context': identity(
+            group='', user='peer', account='', session='s')})
+        self.assertEqual(result['account_id'], 'bot')
+        self.assertEqual(calls, ['chat.get_stream_by_user_id'])
 
     async def test_lookup_other_chat_account_group_platform_never_falls_back(self):
         for field, value in [("session_id", "foreign"), ("account_id", "other"),

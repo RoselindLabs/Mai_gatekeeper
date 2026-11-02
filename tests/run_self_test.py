@@ -506,6 +506,7 @@ async def test_tools() -> None:
     ctx.fixtures["message"] = FakeMessage(
         {
             "m-1": {
+                "message_id": "m-1",
                 "session_id": "stream-g-70001", "account_id": "90000", "platform": "qq",
                 "message_info": {
                     "user_info": {"user_id": "50001", "user_nickname": "捣蛋鬼"},
