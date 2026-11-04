@@ -13,7 +13,7 @@ concurrency:
 jobs:
   tests:
     name: runtime (${{ matrix.case }})
-    if: github.repository == 'znzsofficial/Mai_gatekeeper'
+    if: github.repository == 'RoselindLabs/Mai_gatekeeper'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
