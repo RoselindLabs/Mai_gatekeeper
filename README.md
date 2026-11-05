@@ -2,7 +2,13 @@
 
 MaiBot 插件：好友申请审批（LLM 自动 / 管理员人工 / 混合）+ 用户屏蔽（发言拦截、私聊删好友）。
 
-本仓库为 [octmicy 原作](https://github.com/octmicy/Mai_gatekeeper) 的定向维护 fork（0.6.8），原 MIT 作者与历史保留，见 [NOTICE.md](NOTICE.md)。插件 ID 仍为 `octmicy.mai-gatekeeper`，不是另一份插件。
+本仓库为 [octmicy 原作](https://github.com/octmicy/Mai_gatekeeper) 的定向维护 fork（0.6.9），原 MIT 作者与历史保留，见 [NOTICE.md](NOTICE.md)。插件 ID 仍为 `octmicy.mai-gatekeeper`，不是另一份插件。
+
+### 异常好友申请
+
+身份明确、首次收到的申请沿原审批模式处理。UIN=0/身份未知或重复flag无法确认新一轮时，管理员用 `/fr review` 查看原因，并在QQ客户端处理。异常不调用模型或审批动作，也不自动通知刷屏；日志有简短提示。
+
+独立异常展示表只保最近128条（同账号/flag合并），满后淘汰最旧展示记录，不暂停其他申请人。对应旧pending永久转review，淘汰展示记录也不能恢复审批；原终态、unknown及动作账本不删除。已发出的动作按原结果落账，不取消重放。未知身份的展示记录被淘汰后，若将来首次取得可信QQ号且没有原审批记录，按正常首次申请处理。`/fr review`仅显示当前账号最近10条，不可通过`ok/no`执行。
 
 > 配置示例见 [`config.example.toml`](config.example.toml)：复制为 `config.toml` 后按需修改（首次加载也会自动生成默认配置）。更新历史见 [CHANGELOG.md](CHANGELOG.md)。
 

@@ -238,19 +238,31 @@ class MaiGateKeeper(MaiBotPlugin):
         user_id = str(payload.get("user_id") or "").strip()
         comment = str(payload.get("comment") or "").strip()[:2000]
         account = str(getattr(self._client, "self_id", "") or "")
-        if (not flag or len(flag) > 1024 or not user_id or len(user_id) > 64
+        if (not flag or len(flag) > 1024 or len(user_id) > 64
                 or not account or str(payload.get("self_id") or "") != account):
             return
 
         store = self._require_store()
+        if not user_id.isascii() or not user_id.isdigit() or int(user_id) == 0:
+            store.observe_friend_request(flag, account, "", "unresolved_user")
+            LOGGER.info("守门人：申请人身份未确认，请查看 /fr review 并在QQ客户端处理")
+            return
+        if store.get_friend_request_by_flag(flag) is not None or store.has_friend_observation(flag, account):
+            store.observe_friend_request(flag, account, user_id, "repeated_flag")
+            LOGGER.info("守门人：重复申请标识，请查看 /fr review 并在QQ客户端处理")
+            return
+        # Reserve before nickname/LLM awaits so a repeated event fences this work.
+        row_id = store.add_friend_request(flag, user_id, "", comment, account)
+        if row_id is None:
+            return
         owner = self._client
         generation = self._generation
         nickname = await self._fetch_nickname(user_id)
-        if owner is not self._client or generation != self._generation or not self._tool_ready():
+        if (owner is not self._client or generation != self._generation or not self._tool_ready()
+                or str(getattr(self._client, "self_id", "") or "") != account):
             return
-        row_id = store.add_friend_request(flag, user_id, nickname, comment, account)
-        if row_id is None:
-            return  # 同一 flag 重复推送，忽略
+        if not store.set_friend_request_nickname(row_id, nickname):
+            return
         LOGGER.info("守门人收到好友申请 #%s", row_id)
         await self._dispatch_friend_request(row_id, user_id, nickname, comment)
 
@@ -384,6 +396,8 @@ class MaiGateKeeper(MaiBotPlugin):
         store = self._require_store()
         request = store.get_friend_request(row_id)
         if request is None or request["status"] != "pending":
+            if request and request["status"] == "review":
+                return "review", request
             return "not_pending", request
 
         client = self._client
@@ -966,7 +980,7 @@ class MaiGateKeeper(MaiBotPlugin):
     @Command(
         name="fr",
         pattern=r"^/fr\b",
-        description="好友申请管理（管理员）：/fr list | /fr ok 序号 | /fr no 序号",
+        description="好友申请管理（管理员）：/fr list | /fr review | /fr ok 序号 | /fr no 序号",
     )
     async def cmd_fr(self, **kwargs: Any) -> tuple[bool, str, int]:
         """好友申请查看与审批。"""
@@ -988,6 +1002,15 @@ class MaiGateKeeper(MaiBotPlugin):
         parts = text.split()
         sub = parts[1].lower() if len(parts) > 1 else "list"
         store = self._require_store()
+
+        if sub == "review":
+            account = str(getattr(self._client, "self_id", "") or "")
+            rows = store.list_friend_observations(account) if account else []
+            lines = ["异常申请（最近10条），请在QQ客户端处理："]
+            for row in rows:
+                reason = "申请人身份未确认" if row["reason"] == "unresolved_user" else "重复标识，无法确认是否新一轮申请"
+                lines.append(f"{row['observed_at']} · {row['user_id'] or 'QQ号未知'} · {reason}")
+            return "\n".join(lines) if rows else "当前没有异常申请记录"
 
         if sub == "list":
             status = parts[2] if len(parts) > 2 else "pending"
@@ -1011,6 +1034,7 @@ class MaiGateKeeper(MaiBotPlugin):
                 row_id, sub == "ok", f"admin:{admin_user_id}", "管理员人工审批"
             )
             outcome_text = {
+                "review": "该申请需在QQ客户端处理，异常原因见 /fr review",
                 "approved": "已同意该好友申请",
                 "rejected": "已拒绝该好友申请",
                 "expired": "该申请已过期（flag 失效），对方需重新申请",
@@ -1023,7 +1047,7 @@ class MaiGateKeeper(MaiBotPlugin):
             }.get(outcome, f"处理异常（{outcome}）")
             return outcome_text
 
-        return "用法：/fr list · /fr ok 序号 · /fr no 序号"
+        return "用法：/fr list · /fr review · /fr ok 序号 · /fr no 序号"
 
     @Command(
         name="block",

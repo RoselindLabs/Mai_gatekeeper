@@ -12,6 +12,7 @@ db.* 能力只能操作主程序预定义表（无建表通道），插件私有
 from __future__ import annotations
 
 import sqlite3
+import hashlib
 import time
 from contextlib import closing
 from datetime import datetime
@@ -108,6 +109,10 @@ class GateKeeperStore:
             kind TEXT NOT NULL, action_key TEXT NOT NULL, status TEXT NOT NULL,
             updated_at TEXT NOT NULL, PRIMARY KEY(kind, action_key))""")
         self._conn.execute("PRAGMA user_version=1")
+        self._conn.execute("""CREATE TABLE IF NOT EXISTS friend_review_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL,
+            fingerprint TEXT NOT NULL, user_id TEXT NOT NULL, reason TEXT NOT NULL,
+            observed_at TEXT NOT NULL, UNIQUE(account_id, fingerprint))""")
         # A crash/cancellation may happen after remote dispatch. Never replay it.
         self._conn.execute("UPDATE friend_requests SET status='unknown' WHERE status='executing'")
         self._conn.execute("UPDATE action_ledger SET status='unknown' WHERE status='executing'")
@@ -267,6 +272,45 @@ class GateKeeperStore:
             "SELECT * FROM friend_requests WHERE id = ?", (row_id,)
         ).fetchone()
         return dict(row) if row else None
+
+    def get_friend_request_by_flag(self, flag: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM friend_requests WHERE flag=?", (flag,)).fetchone()
+        return dict(row) if row else None
+
+    def observe_friend_request(self, flag: str, account_id: str, user_id: str, reason: str) -> None:
+        """Bounded display notes; pending quarantine survives note eviction and restart."""
+        if not account_id or reason not in {"unresolved_user", "repeated_flag"}:
+            raise ValueError("Invalid observation")
+        fingerprint = hashlib.sha256(flag.encode()).hexdigest()
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._conn.execute(
+                "UPDATE friend_requests SET status='review', decision='请在QQ客户端处理'"
+                " WHERE flag=? AND status='pending'", (flag,))
+            self._conn.execute(
+                "INSERT INTO friend_review_notes(account_id,fingerprint,user_id,reason,observed_at)"
+                " VALUES(?,?,?,?,?) ON CONFLICT(account_id,fingerprint) DO UPDATE SET"
+                " user_id=excluded.user_id,reason=excluded.reason,observed_at=excluded.observed_at",
+                (account_id, fingerprint, user_id[:64], reason, datetime.now().isoformat()))
+            self._conn.execute("DELETE FROM friend_review_notes WHERE id NOT IN"
+                               " (SELECT id FROM friend_review_notes ORDER BY observed_at DESC,id DESC LIMIT 128)")
+            self._conn.execute("COMMIT")
+        except BaseException:
+            self._conn.execute("ROLLBACK")
+            raise
+
+    def list_friend_observations(self, account_id: str) -> list[dict[str, Any]]:
+        return [dict(row) for row in self._conn.execute(
+            "SELECT user_id,reason,observed_at FROM friend_review_notes WHERE account_id=?"
+            " ORDER BY observed_at DESC,id DESC LIMIT 10", (account_id,))]
+
+    def has_friend_observation(self, flag: str, account_id: str) -> bool:
+        return self._conn.execute("SELECT 1 FROM friend_review_notes WHERE account_id=? AND fingerprint=?",
+                                  (account_id, hashlib.sha256(flag.encode()).hexdigest())).fetchone() is not None
+
+    def set_friend_request_nickname(self, row_id: int, nickname: str) -> bool:
+        return self._conn.execute("UPDATE friend_requests SET nickname=? WHERE id=? AND status='pending'",
+                                  (nickname[:100], row_id)).rowcount == 1
 
     def list_friend_requests(
         self, status: str = "pending", limit: int = 10

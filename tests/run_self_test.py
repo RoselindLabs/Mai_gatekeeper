@@ -387,16 +387,19 @@ async def test_friend_request_flows() -> None:
     await plugin._on_ob_event(
         {"post_type": "request", "request_type": "friend", "flag": "FLAG-1", "user_id": 40001, "comment": "重复"}
     )
-    check("重复 flag 不再落库", len(store.list_friend_requests("pending")) == 1)
+    check("重复 flag 转人工且原记录保留", len(store.list_friend_requests("review")) == 1)
+    await plugin._on_ob_event(
+        {"post_type": "request", "request_type": "friend", "flag": "FLAG-NEW", "user_id": 40003}
+    )
 
     # 管理员 ok：action 正确
-    manual_row = row_id_by_flag(store, "FLAG-1")
+    manual_row = row_id_by_flag(store, "FLAG-NEW")
     reply = await plugin._handle_fr_command(f"/fr ok {manual_row}", "10001")
     check("管理员同意后状态 approved", "已同意" in reply and store.get_friend_request(manual_row)["status"] == "approved")
     check(
         "set_friend_add_request 参数正确",
         any(
-            a["action"] == "set_friend_add_request" and a["params"]["flag"] == "FLAG-1" and a["params"]["approve"] is True
+            a["action"] == "set_friend_add_request" and a["params"]["flag"] == "FLAG-NEW" and a["params"]["approve"] is True
             for a in client.actions
         ),
     )

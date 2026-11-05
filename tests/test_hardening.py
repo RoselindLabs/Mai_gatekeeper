@@ -377,9 +377,67 @@ class Hardening(unittest.IsolatedAsyncioTestCase):
         event = dict(post_type="request", request_type="friend", self_id="other", user_id="u", flag="f")
         await self.plugin._on_ob_event(event)
         self.assertEqual(self.store.list_friend_requests(), [])
-        event.update(self_id="bot", comment="x" * 10000)
+        event.update(self_id="bot", user_id="12345", comment="x" * 10000)
         await self.plugin._on_ob_event(event)
         self.assertEqual(len(self.store.list_friend_requests()[0]["comment"]), 2000)
+
+    async def test_review_capacity_never_blocks_other_requests_and_survives_eviction(self):
+        old = self.store.add_friend_request("old", "123", account_id="bot")
+        self.store.observe_friend_request("old", "bot", "123", "repeated_flag")
+        for i in range(140):
+            self.store.observe_friend_request(f"unknown-{i}", "bot", "", "unresolved_user")
+        self.assertEqual(self.store._conn.execute("SELECT count(*) FROM friend_review_notes").fetchone()[0], 128)
+        self.assertEqual(self.store.get_friend_request(old)["status"], "review")
+        self.assertFalse(self.store.claim_request(old, "bot", "admin", "yes"))
+        fresh = self.store.add_friend_request("fresh", "456", account_id="bot")
+        self.assertTrue(self.store.claim_request(fresh, "bot", "admin", "yes"))
+        self.store.finish_request(fresh, "unknown")
+        self.store.observe_friend_request("fresh", "bot", "456", "repeated_flag")
+        self.assertEqual(self.store.get_friend_request(fresh)["status"], "unknown")
+        with closing(GateKeeperStore(self.path)) as reopened:
+            self.assertFalse(reopened.claim_request(old, "bot", "admin", "yes"))
+        self.assertEqual(self.store.list_friend_observations("other"), [])
+
+    async def test_unresolved_identity_has_no_model_lookup_or_action(self):
+        self.plugin._fetch_nickname = AsyncMock()
+        self.plugin._dispatch_friend_request = AsyncMock()
+        for value in (0, "0", None, "not-a-qq"):
+            await self.plugin._on_ob_event(dict(post_type="request", request_type="friend",
+                self_id="bot", user_id=value, flag="uid-unknown"))
+        self.plugin._fetch_nickname.assert_not_called()
+        self.plugin._dispatch_friend_request.assert_not_called()
+        self.assertEqual(len(self.store.list_friend_observations("bot")), 1)
+        self.assertIn("QQ客户端", await self.plugin._handle_fr_command("/fr review", "admin"))
+        self.assertEqual(self.actions, [])
+
+    async def test_repeat_during_nickname_or_llm_cannot_dispatch_approval(self):
+        event = dict(post_type="request", request_type="friend", self_id="bot", user_id="123", flag="repeat")
+        async def nickname(_):
+            await self.plugin._on_ob_event(event)
+            return "test"
+        self.plugin._fetch_nickname = nickname
+        self.plugin._dispatch_friend_request = AsyncMock()
+        await self.plugin._on_ob_event(event)
+        self.plugin._dispatch_friend_request.assert_not_called()
+        row = self.store.get_friend_request_by_flag("repeat")
+        self.assertEqual(await self.plugin._execute_decision(row["id"], True, "admin", "yes"), "review")
+        self.assertEqual(self.actions, [])
+
+    async def test_repeat_during_llm_and_lock_wait_is_quarantined(self):
+        row = self.store.add_friend_request("llm", "123", account_id="bot")
+        async def review(*args):
+            self.store.observe_friend_request("llm", "bot", "123", "repeated_flag")
+            return {"approve": True, "confidence": 1, "reason": "ok"}
+        self.plugin._llm_review = review
+        await self.plugin._dispatch_friend_request(row, "123", "test", "hello")
+        self.assertEqual(self.actions, [])
+        pending = self.store.add_friend_request("wait", "456", account_id="bot")
+        async with self.plugin._lifecycle_lock:
+            task = asyncio.create_task(self.plugin._execute_decision(pending, True, "admin", "yes"))
+            await asyncio.sleep(0)
+            self.store.observe_friend_request("wait", "bot", "456", "repeated_flag")
+        self.assertEqual(await task, "review")
+        self.assertEqual(self.actions, [])
 
     async def test_llm_bounded_input_and_nonfinite_output(self):
         calls = []

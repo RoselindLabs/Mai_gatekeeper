@@ -2,7 +2,7 @@
   "manifest_version": 2,
   "id": "octmicy.mai-gatekeeper",
   "name": "麦麦守门人",
-  "version": "0.6.8",
+  "version": "0.6.9",
   "description": "好友申请审批（LLM 自动 / 管理员人工 / 混合）+ 用户屏蔽（发言拦截、私聊删好友）插件。自建 OneBot v11 正向 WebSocket 直连 NapCat / SnowLuma 对端，无需修改适配器。",
   "author": {
     "name": "octmicy",
