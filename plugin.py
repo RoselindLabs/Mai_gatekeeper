@@ -594,6 +594,7 @@ class MaiGateKeeper(MaiBotPlugin):
 
     @Tool(
         name="block_user",
+        platforms="qq",
         trusted_context="neko.tools.context.v1",
         description=(
             "屏蔽当前群聊中的一个用户，使其在本群的发言被机器人完全忽略。仅群聊可用，屏蔽只对本群生效。"
@@ -722,6 +723,7 @@ class MaiGateKeeper(MaiBotPlugin):
 
     @Tool(
         name="unblock_user",
+        platforms="qq",
         trusted_context="neko.tools.context.v1",
         description="解除某用户在本群的屏蔽（撤销 block_user 的效果）。仅群聊可用。",
         brief_description="解除群聊用户的屏蔽",
@@ -776,6 +778,7 @@ class MaiGateKeeper(MaiBotPlugin):
 
     @Tool(
         name="remove_friend",
+        platforms="qq",
         trusted_context="neko.tools.context.v1",
         description=(
             "删除当前私聊对象的好友关系（私聊专用）。"
