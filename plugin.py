@@ -600,7 +600,7 @@ class MaiGateKeeper(MaiBotPlugin):
             "屏蔽当前QQ群的目标用户，让机器人忽略其本群发言。仅用于持续骚扰、刷屏或恶意行为，不用于正常用户。"
             "默认最长24小时，到期自动解除；轻微冒犯可缩短时长。管理员与保护名单用户不可屏蔽。"
         ),
-        brief_description="屏蔽当前QQ群的骚扰用户，让机器人限时忽略其本群发言。",
+        brief_description="屏蔽当前QQ群的目标用户，让机器人忽略其本群发言。仅用于持续骚扰、刷屏或恶意行为，不用于正常用户。默认最长24小时，到期自动解除；轻微冒犯可缩短时长。管理员与保护名单用户不可屏蔽。",
         detailed_description=(
             "屏蔽后该用户的新消息在本插件入站 Hook 处被丢弃，并向群里发送一条提示；不保证先于其他插件。"
             "优先通过目标用户在当前目标群的真实 message_id 精确定位发送者；共享Focus缺账号锚点时必须提供。"
@@ -725,7 +725,7 @@ class MaiGateKeeper(MaiBotPlugin):
         platforms="qq",
         trusted_context="neko.tools.context.v1",
         description="解除目标用户在当前QQ群的屏蔽，撤销block_user在本群的效果。仅群聊可用。",
-        brief_description="解除目标用户在当前QQ群的屏蔽。",
+        brief_description="解除目标用户在当前QQ群的屏蔽，撤销block_user在本群的效果。仅群聊可用。",
         detailed_description=(
             "解除 block_user 做出的本群屏蔽，该用户的发言恢复可见。"
             "优先通过目标用户在当前目标群的真实 message_id 定位；共享Focus缺账号锚点时必须提供。仅身份完整且用户ID已知时可用 user_id，缺证据不要猜。"
@@ -784,7 +784,7 @@ class MaiGateKeeper(MaiBotPlugin):
             "仅用于持续骚扰且屏蔽不足的情况，操作不可逆，谨慎使用。"
             "须配置开启，保护名单用户不可删除；缺可信会话或账号证据不执行，不猜身份。"
         ),
-        brief_description="删除当前QQ私聊对象好友并全局屏蔽；不可逆，须配置开启，不能指定他人。",
+        brief_description="删除当前QQ私聊对象好友，并自动全局屏蔽以防再次申请；不能指定他人。仅用于持续骚扰且屏蔽不足的情况，操作不可逆，谨慎使用。须配置开启，保护名单用户不可删除；缺可信会话或账号证据不执行，不猜身份。",
         detailed_description=(
             "只能删除正在与机器人私聊的对方，工具不接受指定其他用户。"
             "删除好友后会自动全局屏蔽对方，防止其再次申请好友。"
