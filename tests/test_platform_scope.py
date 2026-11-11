@@ -11,13 +11,14 @@ class PlatformScopeTests(unittest.TestCase):
         for tool in tools:
             self.assertIn(tool['metadata']['platforms'], ('qq', ['qq']))
             description = tool['metadata']['description']
-            self.assertIn('缺', description)
-            self.assertRegex(description, '不(?:要)?猜')
             if tool['name'] != 'remove_friend':
-                for hint in ('目标用户', '当前目标群', '真实message_id', 'Focus', '必须提供'):
-                    self.assertIn(hint, description)
+                self.assertIn('目标用户', description)
                 parameters = {p['name']: p for p in tool['metadata']['parameters']}
-                self.assertIn('当前目标群', parameters['message_id']['description'])
+                for hint in ('当前目标群', '真实消息ID', 'Focus', '必需', '不猜'):
+                    self.assertIn(hint, parameters['message_id']['description'])
                 self.assertIn('身份完整', parameters['user_id']['description'])
+            else:
+                self.assertIn('缺', description)
+                self.assertRegex(description, '不(?:要)?猜')
         hook = next(c for c in components if c['name'] == 'gatekeeper_intercept')
         self.assertFalse(hook['metadata'].get('platforms'))
