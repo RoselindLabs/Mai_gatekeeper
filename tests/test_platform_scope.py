@@ -12,7 +12,7 @@ class PlatformScopeTests(unittest.TestCase):
             self.assertIn(tool['metadata']['platforms'], ('qq', ['qq']))
             description = tool['metadata']['description']
             self.assertIn('缺', description)
-            self.assertIn('不猜', description)
+            self.assertRegex(description, '不(?:要)?猜')
             if tool['name'] != 'remove_friend':
                 for hint in ('目标用户', '当前目标群', '真实message_id', 'Focus', '必须提供'):
                     self.assertIn(hint, description)
