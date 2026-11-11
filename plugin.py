@@ -600,25 +600,27 @@ class MaiGateKeeper(MaiBotPlugin):
             "屏蔽当前群聊中的一个用户，使其在本群的发言被机器人完全忽略。仅群聊可用，屏蔽只对本群生效。"
             "仅用于应对持续骚扰、刷屏、恶意行为的用户，不要对正常用户使用。"
             "屏蔽有时效（默认最长一天，到期自动解除），轻微冒犯可指定更短的时长。"
+            "优先提供目标用户在当前目标群的真实message_id；共享Focus缺账号锚点时必须提供。"
+            "仅身份完整且用户ID已知时可用user_id，缺证据不猜。"
         ),
-        brief_description="屏蔽群聊用户（有时效），使其发言被机器人忽略",
+        brief_description="屏蔽当前QQ群用户（有时效），忽略其本群发言。优先提供目标用户在当前目标群的真实message_id；共享Focus缺账号锚点时必须提供。仅身份完整且用户ID已知时可用user_id，缺证据不要猜。",
         detailed_description=(
             "屏蔽后该用户的新消息在本插件入站 Hook 处被丢弃，并向群里发送一条提示；不保证先于其他插件。"
-            "优先通过 message_id（该用户发过的任意一条消息ID）精确定位发送者，"
-            "其次直接给 user_id。duration_hours 可指定更短时长，最大不超过配置的上限"
+            "优先通过目标用户在当前目标群的真实 message_id 精确定位发送者；共享Focus缺账号锚点时必须提供。"
+            "仅身份完整且用户ID已知时可直接给 user_id，缺证据不要猜。duration_hours 可指定更短时长，最大不超过配置的上限"
             "（默认 24 小时），到期自动解除。管理员与保护名单用户不可被屏蔽。"
         ),
         parameters=[
             ToolParameterInfo(
                 name="message_id",
                 param_type=ToolParamType.STRING,
-                description="要屏蔽的用户发送的任意一条消息的ID（优先使用，可精确定位发送者）",
+                description="目标用户在当前目标群的真实消息ID；优先使用，共享Focus缺账号锚点时必需，不猜编号",
                 required=False,
             ),
             ToolParameterInfo(
                 name="user_id",
                 param_type=ToolParamType.STRING,
-                description="要屏蔽的用户ID（无法提供消息ID时使用）",
+                description="已知的目标用户ID；仅可信身份完整时可单独使用，不能替代缺失的消息/账号证据",
                 required=False,
             ),
             ToolParameterInfo(
@@ -725,23 +727,23 @@ class MaiGateKeeper(MaiBotPlugin):
         name="unblock_user",
         platforms="qq",
         trusted_context="neko.tools.context.v1",
-        description="解除某用户在本群的屏蔽（撤销 block_user 的效果）。仅群聊可用。",
-        brief_description="解除群聊用户的屏蔽",
+        description="解除某用户在本群的屏蔽（撤销 block_user 的效果）。仅群聊可用。优先提供目标用户在当前目标群的真实message_id；共享Focus缺账号锚点时必须提供。仅身份完整且用户ID已知时可用user_id，缺证据不猜。",
+        brief_description="解除当前QQ群用户的本群屏蔽。优先提供目标用户在当前目标群的真实message_id；共享Focus缺账号锚点时必须提供。仅身份完整且用户ID已知时可用user_id，缺证据不要猜。",
         detailed_description=(
             "解除 block_user 做出的本群屏蔽，该用户的发言恢复可见。"
-            "优先通过 message_id 定位用户，其次直接给 user_id。"
+            "优先通过目标用户在当前目标群的真实 message_id 定位；共享Focus缺账号锚点时必须提供。仅身份完整且用户ID已知时可用 user_id，缺证据不要猜。"
         ),
         parameters=[
             ToolParameterInfo(
                 name="message_id",
                 param_type=ToolParamType.STRING,
-                description="该用户发送的任意一条消息的ID（优先使用）",
+                description="目标用户在当前目标群的真实消息ID；优先使用，共享Focus缺账号锚点时必需，不猜编号",
                 required=False,
             ),
             ToolParameterInfo(
                 name="user_id",
                 param_type=ToolParamType.STRING,
-                description="要解除屏蔽的用户ID",
+                description="已知的目标用户ID；仅可信身份完整时可单独使用，不能替代缺失的消息/账号证据",
                 required=False,
             ),
         ],
@@ -784,8 +786,9 @@ class MaiGateKeeper(MaiBotPlugin):
             "删除当前私聊对象的好友关系（私聊专用）。"
             "目标固定为当前对话的对方，无法指定其他人。"
             "适用于对方持续骚扰且屏蔽不足以解决问题的场景；这是不可逆操作，谨慎使用。"
+            "须配置开启；缺可信会话或账号证据不执行，不猜身份。"
         ),
-        brief_description="删除私聊对象好友（不可逆，谨慎使用）",
+        brief_description="删除当前QQ私聊对象好友（不可逆，须配置开启）；目标固定为当前对方，不能指定他人。缺可信会话或账号证据不执行，不猜身份。",
         detailed_description=(
             "只能删除正在与机器人私聊的对方，工具不接受指定其他用户。"
             "删除好友后会自动全局屏蔽对方，防止其再次申请好友。"
