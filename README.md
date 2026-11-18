@@ -2,9 +2,9 @@
 
 MaiBot 插件：好友申请审批（LLM 自动 / 管理员人工 / 混合）+ 用户屏蔽（发言拦截、私聊删好友）。
 
-本仓库为 [octmicy 原作](https://github.com/octmicy/Mai_gatekeeper) 的定向维护 fork（0.6.11），原 MIT 作者与历史保留，见 [NOTICE.md](NOTICE.md)。插件 ID 仍为 `octmicy.mai-gatekeeper`，不是另一份插件。
+本仓库为 [octmicy 原作](https://github.com/octmicy/Mai_gatekeeper) 的定向维护 fork（0.6.12），原 MIT 作者与历史保留，见 [NOTICE.md](NOTICE.md)。插件 ID 仍为 `octmicy.mai-gatekeeper`，不是另一份插件。
 
-0.6.11仅补模型实际可见的工具说明：群工具优先用目标用户在当前目标群的真实message_id，共享Focus缺账号锚点时必须提供；已知user_id仅在可信身份完整时可单独使用，缺证据不猜。私聊删除固定为当前对方，不借说明改权限或执行流程。
+群工具优先用目标用户在当前目标群的真实 `message_id`，共享 Focus 缺账号锚点时必须提供；已知 `user_id` 仅在可信身份完整时可单独使用，缺证据不猜。私聊删除固定为当前对方。
 
 三个管理工具仅支持 QQ，声明 `platforms="qq"`，在支持平台过滤的 Host 上不向 TG 会话展示或执行。通用入站屏蔽 Hook 仍按平台隔离记录并跨平台拦截。共享 Focus 中保留 QQ 群聊屏蔽/解封和 QQ 私聊删除分支；原权限、名单及 unknown 账本不变。
 
@@ -20,7 +20,7 @@ MaiBot 插件：好友申请审批（LLM 自动 / 管理员人工 / 混合）+ �
 
 ## 环境要求
 
-- 当前验证目标 MaiBot 1.3.19 / SDK 2.20.0，Python 3.12+；需要宿主现有 `neko.tools.context.v1` 可信工具身份桥。缺桥或缺可信账号/会话身份时敏感工具拒绝执行，不信任模型传入的普通 kwargs。
+- 声明兼容范围：MaiBot Host 1.3.19 至 1.4.6，SDK 2.20.0 至 2.91.99；需 Python 3.12+。敏感工具依赖宿主的 `neko.tools.context.v1` 可信工具身份桥；缺桥或缺可信账号/会话身份时拒绝执行，不信任模型传入的普通 kwargs。
 - 共享Focus无锚点时，群工具须给当前群真实message_id，经现有message.get_by_id核实会话/群/平台/账号与已登录OneBot一致；仅user_id不能补全未知账号。私聊可用现有查流接口核验真实目标，不创建新流补身份，不增加能力权限。
 - 对端为标准 OneBot v11 正向 WebSocket 服务端（NapCat / SnowLuma 均可），且允许多个客户端同时连接
 
