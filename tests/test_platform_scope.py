@@ -9,7 +9,10 @@ class PlatformScopeTests(unittest.TestCase):
         tools = [c for c in components if c['type'] == 'TOOL']
         self.assertEqual({c['name'] for c in tools}, {'block_user', 'unblock_user', 'remove_friend'})
         for tool in tools:
-            self.assertIn(tool['metadata']['platforms'], ('qq', ['qq']))
+            # SDK 2.23 promotes scope to the declaration; 2.20 keeps platforms in metadata.
+            scope = tool['metadata'] | tool
+            self.assertIn(scope['platforms'], ('qq', ['qq']))
+            self.assertEqual(scope['chat_scope'], 'private' if tool['name'] == 'remove_friend' else 'group')
             description = tool['metadata']['description']
             if tool['name'] != 'remove_friend':
                 self.assertIn('目标用户', description)
@@ -21,4 +24,9 @@ class PlatformScopeTests(unittest.TestCase):
                 self.assertIn('缺', description)
                 self.assertRegex(description, '不(?:要)?猜')
         hook = next(c for c in components if c['name'] == 'gatekeeper_intercept')
-        self.assertFalse(hook['metadata'].get('platforms'))
+        scope = hook['metadata'] | hook
+        self.assertEqual(hook['type'], 'HOOK_HANDLER')
+        self.assertEqual(hook['metadata']['hook'], 'chat.receive.before_process')
+        self.assertIn(scope.get('platforms'), (None, []))
+        self.assertIn(scope.get('chat_scope'), (None, 'all'))
+        self.assertIn(scope.get('allowed_session'), (None, []))

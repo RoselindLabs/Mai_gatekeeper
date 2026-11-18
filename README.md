@@ -108,7 +108,7 @@ python -X utf8 scripts/package.py  # 白名单确定性源码包；隔离子进�
 
 `[ob]` 由用户手动填写 OneBot v11 对端（NapCat / SnowLuma 均为标准协议）的正向 WebSocket 地址、端口与访问令牌——与适配器所连的是同一个对端，插件以第二个客户端身份并存连接。独立连接用于接收好友申请事件，有合理用途，不强迁适配器。清空 `server`/`port` 会关闭旧连接；配置变化与外部动作受生命周期锁协调。已发送动作不能被配置撤销；仍在 LLM 审核或等待执行的旧 generation 不得继续发送。
 
-离线 gate 禁止真实网络（仅允许 Windows stdlib socketpair 初始化事件循环），不运行原上游 `run_ob_client_test.py` 的回环 WS 集成入口，不接生产 WS、QQ 或 LLM。CI 两组为 Linux/Python3.14.4 与 Windows/Python3.12、SDK2.20，实际执行 Run tests / Verify source package，并设 ci-gate / publish-gate；没有生产 secrets、自动部署或 Release。隔离打包验证不是实际 Host/Runner 进程、QQ 投递或真实模型质量证明。
+离线 gate 禁止真实网络（仅允许 Windows stdlib socketpair 初始化事件循环），不运行原上游 `run_ob_client_test.py` 的回环 WS 集成入口，不接生产 WS、QQ 或 LLM。CI 两组为 Ubuntu 24.04 / Python 3.14.4 / SDK 2.23.0 与 Windows / Python 3.12 / SDK 2.20.0，实际执行 Run tests / Verify source package，并设 ci-gate / publish-gate；没有生产 secrets、自动部署或 Release。隔离打包验证不是实际 Host/Runner 进程、QQ 投递或真实模型质量证明。
 
 ## 已知边界
 

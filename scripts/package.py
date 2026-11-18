@@ -40,7 +40,7 @@ def verify(output=None):
         root = extracted / DIRECTORY
         for name, digest in hashes.items():
             assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
-        program = r'''import asyncio,importlib.util,json,pathlib,sys
+        program = r'''import asyncio,importlib.metadata,importlib.util,json,pathlib,sys
 root=pathlib.Path(sys.argv[1]).resolve()
 def guard(event,args):
  if event!='socket.connect':return
@@ -56,8 +56,18 @@ from maibot_sdk.context import PluginContext,PluginPaths
 plugin=create_plugin();assert isinstance(plugin,MaiBotPlugin)
 entries=plugin.get_components();assert len(entries)==6
 assert {c['name'] for c in entries}=={'block_user','unblock_user','remove_friend','fr','block','gatekeeper_intercept'}
-for c in entries:
- if c['type']=='TOOL':assert c['metadata']['trusted_context']=='neko.tools.context.v1'
+tools={c['name']:c for c in entries if c['type']=='TOOL'}
+assert set(tools)=={'block_user','unblock_user','remove_friend'}
+for name,tool in tools.items():
+ scope=tool['metadata'] | tool
+ assert tool['metadata']['trusted_context']=='neko.tools.context.v1'
+ assert scope['platforms'] in ('qq',['qq'])
+ assert scope['chat_scope']==('private' if name=='remove_friend' else 'group')
+hook=next(c for c in entries if c['name']=='gatekeeper_intercept')
+scope=hook['metadata'] | hook
+assert hook['type']=='HOOK_HANDLER' and hook['metadata']['hook']=='chat.receive.before_process'
+assert scope.get('platforms') in (None,[]) and scope.get('chat_scope') in (None,'all')
+assert scope.get('allowed_session') in (None,[])
 defaults=plugin.build_default_config()
 assert defaults['block']['allow_remove_friend'] is False
 assert defaults['approve']['mode']=='hybrid' and defaults['approve']['confidence_threshold']==0.7
@@ -78,7 +88,7 @@ async def lifecycle():
  await plugin.on_unload()
  assert plugin._store is None and plugin._client is None
 asyncio.run(lifecycle())
-print('Isolated allowlisted source: actual SDK2.20, six components, synthetic lifecycle; no Host/QQ/LLM')
+print('Isolated allowlisted source: SDK',importlib.metadata.version('maibot-plugin-sdk'),'; six components, synthetic lifecycle; no Host/QQ/LLM')
 '''
         subprocess.run([sys.executable, "-I", "-X", "utf8", "-c", program, str(root)],
                        cwd=directory, check=True)
