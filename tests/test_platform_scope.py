@@ -21,8 +21,12 @@ class PlatformScopeTests(unittest.TestCase):
                     self.assertIn(hint, parameters['message_id']['description'])
                 self.assertIn('身份完整', parameters['user_id']['description'])
             else:
-                self.assertIn('缺', description)
-                self.assertRegex(description, '不(?:要)?猜')
+                self.assertEqual(description, '仅在持续骚扰且屏蔽不足时，删除当前 QQ 私聊好友并全局屏蔽；不可逆。')
+                reason, = tool['metadata']['parameters']
+                self.assertEqual(reason['name'], 'reason')
+                self.assertFalse(reason['required'])
+                for hint in ('显式开启', '不能指定他人', '保护名单', '缺可信会话或账号证据不执行', '不猜身份'):
+                    self.assertIn(hint, reason['description'])
         hook = next(c for c in components if c['name'] == 'gatekeeper_intercept')
         scope = hook['metadata'] | hook
         self.assertEqual(hook['type'], 'HOOK_HANDLER')

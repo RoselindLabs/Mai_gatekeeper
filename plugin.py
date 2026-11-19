@@ -779,22 +779,16 @@ class MaiGateKeeper(MaiBotPlugin):
         name="remove_friend",
         platforms="qq",
         trusted_context="neko.tools.context.v1",
-        description=(
-            "删除当前QQ私聊对象好友，并自动全局屏蔽以防再次申请；不能指定他人。"
-            "仅用于持续骚扰且屏蔽不足的情况，操作不可逆，谨慎使用。"
-            "须配置开启，保护名单用户不可删除；缺可信会话或账号证据不执行，不猜身份。"
-        ),
-        brief_description="删除当前QQ私聊对象好友，并自动全局屏蔽以防再次申请；不能指定他人。仅用于持续骚扰且屏蔽不足的情况，操作不可逆，谨慎使用。须配置开启，保护名单用户不可删除；缺可信会话或账号证据不执行，不猜身份。",
-        detailed_description=(
-            "只能删除正在与机器人私聊的对方，工具不接受指定其他用户。"
-            "删除好友后会自动全局屏蔽对方，防止其再次申请好友。"
-            "保护名单用户不可删除。"
-        ),
+        description="仅在持续骚扰且屏蔽不足时，删除当前 QQ 私聊好友并全局屏蔽；不可逆。",
         parameters=[
             ToolParameterInfo(
                 name="reason",
                 param_type=ToolParamType.STRING,
-                description="删除原因（简短，会记录日志并通知管理员）",
+                description=(
+                    "简述持续骚扰及屏蔽不足的原因，供记录和通知管理员。须在配置中显式开启，不能指定他人；"
+                    "管理员、Host 操作员、机器人自身及保护名单用户不可删除。缺可信会话或账号证据不执行，不猜身份。"
+                    "删除后会自动拒绝对方的好友申请。"
+                ),
                 required=False,
             ),
         ],

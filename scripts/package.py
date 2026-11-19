@@ -74,7 +74,7 @@ assert defaults['approve']['mode']=='hybrid' and defaults['approve']['confidence
 assert defaults['block']['max_duration_hours']==24 and defaults['block']['intercept_enabled'] is True
 assert defaults['plugin']['config_version']=='1.0.0'
 manifest=json.loads((root/'_manifest.json').read_text(encoding='utf-8'))
-assert manifest['id']=='octmicy.mai-gatekeeper' and manifest['version']=='0.6.12'
+assert manifest['id']=='octmicy.mai-gatekeeper' and manifest['version']=='0.6.13'
 assert manifest['host_application']=={'min_version':'1.3.19','max_version':'1.4.6'}
 assert manifest['sdk']=={'min_version':'2.20.0','max_version':'2.91.99'}
 async def forbidden_rpc(*args,**kwargs):raise AssertionError('No Host/model/QQ RPC permitted during package lifecycle')
@@ -93,7 +93,7 @@ print('Isolated allowlisted source: SDK',importlib.metadata.version('maibot-plug
         subprocess.run([sys.executable, "-I", "-X", "utf8", "-c", program, str(root)],
                        cwd=directory, check=True)
     canonical = json.dumps(hashes, sort_keys=True, separators=(",", ":")).encode()
-    report = {"version": "0.6.12", "plugin_id": "octmicy.mai-gatekeeper", "directory": DIRECTORY,
+    report = {"version": "0.6.13", "plugin_id": "octmicy.mai-gatekeeper", "directory": DIRECTORY,
               "members": len(FILES), "files": hashes, "source_sha256": hashlib.sha256(canonical).hexdigest(),
               "zip_sha256": hashlib.sha256(artifact).hexdigest(), "deployed": False}
     if output:

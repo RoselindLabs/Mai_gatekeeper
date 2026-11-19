@@ -2,9 +2,9 @@
 
 MaiBot 插件：好友申请审批（LLM 自动 / 管理员人工 / 混合）+ 用户屏蔽（发言拦截、私聊删好友）。
 
-本仓库为 [octmicy 原作](https://github.com/octmicy/Mai_gatekeeper) 的定向维护 fork（0.6.12），原 MIT 作者与历史保留，见 [NOTICE.md](NOTICE.md)。插件 ID 仍为 `octmicy.mai-gatekeeper`，不是另一份插件。
+本仓库为 [octmicy 原作](https://github.com/octmicy/Mai_gatekeeper) 的定向维护 fork（0.6.13），原 MIT 作者与历史保留，见 [NOTICE.md](NOTICE.md)。插件 ID 仍为 `octmicy.mai-gatekeeper`，不是另一份插件。
 
-群工具优先用目标用户在当前目标群的真实 `message_id`，共享 Focus 缺账号锚点时必须提供；已知 `user_id` 仅在可信身份完整时可单独使用，缺证据不猜。私聊删除固定为当前对方。
+群工具优先用目标用户在当前目标群的真实 `message_id`，共享 Focus 缺账号锚点时必须提供；已知 `user_id` 仅在可信身份完整时可单独使用，缺证据不猜。仅在持续骚扰且屏蔽不足时，删除当前 QQ 私聊好友并全局屏蔽；不可逆。
 
 三个管理工具仅支持 QQ，声明 `platforms="qq"`，在支持平台过滤的 Host 上不向 TG 会话展示或执行。通用入站屏蔽 Hook 仍按平台隔离记录并跨平台拦截。共享 Focus 中保留 QQ 群聊屏蔽/解封和 QQ 私聊删除分支；原权限、名单及 unknown 账本不变。
 
